@@ -1,0 +1,40 @@
+[project]
+name = "photon-platform-studio"
+dynamic = ["version"]
+authors = [
+  { name = "phi ARCHITECT", email = "github@phiarchitect.com" },
+]
+description = "Media production, 1440p QHD encoding, Google Drive archiving, and YouTube broadcast automation for PHOTON & GEOMETOR"
+readme = "README.rst"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "mcp>=1.0",
+]
+
+[project.scripts]
+studio = "photon_platform.studio.__main__:cli"
+studio-mcp = "photon_platform.studio.mcp_server:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["photon_platform*"]
+namespaces = true
+
+[tool.setuptools.dynamic]
+version = {attr = "photon_platform.studio.__version__"}
+
+[project.urls]
+"Homepage" = "https://photon-platform.github.io/studio"
+"Repository" = "https://github.com/photon-platform/studio"
+"Issues" = "https://github.com/photon-platform/studio/issues"
