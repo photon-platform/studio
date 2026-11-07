@@ -10,6 +10,8 @@ import sys
 from .archive import (
     clean_scratch,
     generate_systemd_mount_unit,
+    link_all_projects,
+    link_to_vault,
     scan_storage,
     sync_all_projects,
     sync_archive,
@@ -84,6 +86,14 @@ def cli(argv: list[str] | None = None) -> int:
     p_async_all = arch_sub.add_parser("sync-all", help="Sync Tier 2 master media across all 4 projects (elements, etc, phyllotaxis, GOR-9)")
     p_async_all.add_argument("--direction", choices=["push", "pull"], default="push")
     p_async_all.add_argument("--dry-run", action="store_true")
+
+    p_alink = arch_sub.add_parser("link", help="Move Tier 2 binaries to /home/phi/MEDIA and replace local files with symlinks")
+    p_alink.add_argument("local_dir", type=Path)
+    p_alink.add_argument("rel_subpath")
+    p_alink.add_argument("--execute", action="store_true", help="Perform symlink conversion (default is dry-run)")
+
+    p_alink_all = arch_sub.add_parser("link-all", help="Move Tier 2 binaries across all 4 projects to /home/phi/MEDIA and replace with symlinks")
+    p_alink_all.add_argument("--execute", action="store_true", help="Perform symlink conversion (default is dry-run)")
 
     # 6. broadcast
     p_bcast = sub.add_parser("broadcast", help="Coordinate shared YouTube API quota, schedules, and uploads")
@@ -160,6 +170,20 @@ def cli(argv: list[str] | None = None) -> int:
                 sync_all_projects(
                     direction=args.direction,
                     dry_run=args.dry_run,
+                )
+            )
+        elif args.archive_cmd == "link":
+            _print_json(
+                link_to_vault(
+                    args.local_dir,
+                    args.rel_subpath,
+                    dry_run=not args.execute,
+                )
+            )
+        elif args.archive_cmd == "link-all":
+            _print_json(
+                link_all_projects(
+                    dry_run=not args.execute,
                 )
             )
         return 0

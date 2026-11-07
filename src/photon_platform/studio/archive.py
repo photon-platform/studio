@@ -312,3 +312,93 @@ def sync_all_projects(
         "projects": results,
     }
 
+
+def link_to_vault(
+    local_dir: Path,
+    rel_subpath: str,
+    mount_dir: Path = DEFAULT_MEDIA_MOUNT,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Move Tier 2 master binaries to /home/phi/MEDIA/<rel_subpath> and replace local files with symlinks."""
+    local_dir = Path(local_dir).resolve()
+    vault_root = Path(mount_dir) / rel_subpath.strip("/")
+    linked_count = 0
+    already_linked = 0
+    bytes_freed = 0
+    errors: list[str] = []
+
+    if not Path(mount_dir).exists():
+        return {"status": "error", "error": f"Mount directory {mount_dir} does not exist"}
+
+    for p in sorted(local_dir.rglob("*")):
+        if p.is_dir():
+            continue
+        if p.is_symlink():
+            if classify_file(p) == "tier2_vault":
+                already_linked += 1
+            continue
+        if classify_file(p) != "tier2_vault":
+            continue
+
+        rel_p = p.relative_to(local_dir)
+        target_p = vault_root / rel_p
+        size = p.stat().st_size
+
+        if not dry_run:
+            try:
+                target_p.parent.mkdir(parents=True, exist_ok=True)
+                if target_p.exists() and target_p.stat().st_size == size:
+                    p.unlink()
+                else:
+                    shutil.copy2(str(p), str(target_p))
+                    p.unlink()
+                p.symlink_to(target_p)
+                linked_count += 1
+                bytes_freed += size
+            except Exception as exc:
+                errors.append(f"{rel_p}: {exc}")
+        else:
+            linked_count += 1
+            bytes_freed += size
+
+    return {
+        "status": "ok" if not errors else "partial_error",
+        "dry_run": dry_run,
+        "local_dir": str(local_dir),
+        "vault_root": str(vault_root),
+        "linked_count": linked_count,
+        "already_linked": already_linked,
+        "freed_mb": round(bytes_freed / (1024 * 1024), 2),
+        "errors": errors[:20],
+    }
+
+
+def link_all_projects(
+    mount_dir: Path = DEFAULT_MEDIA_MOUNT,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Replace Tier 2 master binaries across all 4 projects with symlinks to /home/phi/MEDIA/."""
+    results: dict[str, Any] = {}
+    total_freed_mb = 0.0
+    total_linked = 0
+    for name, local_dir, rel_subpath in PROJECT_ARCHIVE_TARGETS:
+        if not local_dir.exists():
+            continue
+        res = link_to_vault(
+            local_dir=local_dir,
+            rel_subpath=rel_subpath,
+            mount_dir=mount_dir,
+            dry_run=dry_run,
+        )
+        results[name] = res
+        total_freed_mb += res.get("freed_mb", 0.0)
+        total_linked += res.get("linked_count", 0)
+    return {
+        "dry_run": dry_run,
+        "mount_dir": str(mount_dir),
+        "total_linked": total_linked,
+        "total_freed_mb": round(total_freed_mb, 2),
+        "projects": results,
+    }
+
+

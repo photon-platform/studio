@@ -16,22 +16,22 @@ When this skill is active, you are producing a **`1080×1920` (`9:16`) vertical 
 Read and follow the complete specification in:
 - `/home/phi/.gemini/config/skills/shorts/references/euclid_props.md`
 
-## Quick Checklist for Every Euclid Proposition Short
+## Quick Checklist for Every Euclid Proposition (`elements/videos/book_<b>/<nn>/`)
 
-1. **Inspect Both Sources**:
+1. **Inspect Both Sources & Existing Package**:
    - Read the Heath RST and `.g1.svg` in `/home/phi/PROJECTS/geometor/euclid/resources/heath/volume_<V>/book_<b>/propositions/`.
    - Read the corresponding `G.<n>/index.rst` and `g1.py` in `/home/phi/PROJECTS/geometor/elements/docsrc/elements2/G.<n>/`.
-2. **Script 3 `[bell:...]` Acts in 100% `brisk` Tempo (No `[style:resonant]`, Use `<pause>` Only)**:
-   - Use `<pause>` (and `<pause> <pause>` for longer beats—never `<short pause>`).
-   - `[bell:proposition]` — Enunciation & Given (*Protasis* & *Ekthesis*).
-   - `[bell:construction]` — Step-by-step compass & straightedge construction (*Kataskeuē*) with `:just:` postulates/propositions.
-   - `[bell:insight]` — Equality assertions (*Apodeixis*) with green tick marks (`|`) and `Q.E.F.` / `Q.E.D.` (*Symperasma*).
-3. **Synthesize & Render Dual `9:16` Short + `16:9` (`1440p QHD` VP9-Trigger) Widescreen**:
-   - Run `/home/phi/.gemini/config/skills/dialogue/scripts/speak.py` (`BypassSandbox: true`).
-   - Run `/home/phi/.gemini/config/skills/shorts/scripts/shorts.py` (`BypassSandbox: false`) with `"type": "euclid_step"` sub-slides (emits both `<short_name>_short.mp4` in `9:16` and `<short_name>_1080p.mp4` upscaled to `2560×1440` `1440p QHD` so YouTube encodes VP9 and defaults to HD).
-   - Embed `<short_name>_stage.html` via `<agent-embed>` and show the rendered slides in a carousel.
-   - **Always Put Media Links at the Very End of the Response**: Place a clean line of direct clickable `file://` links to `.mp4`, `.wav`, and `_stage.html` at the very bottom of your response (after all text, `<agent-embed>`, and carousel):
-     ```markdown
-     **Media**: [<short_name>_short.mp4](file://<artifact_dir>/<short_name>_short.mp4) • [<short_name>_1080p.mp4](file://<artifact_dir>/<short_name>_1080p.mp4) • [<short_name>_stage.html](file://<artifact_dir>/<short_name>_stage.html)
-     ```
+   - Inspect the proposition package in `/home/phi/PROJECTS/geometor/elements/videos/book_<b>/<nn>/` (`script.txt`, `scenes.json`, `curated.json`, `youtube.json`).
+2. **Script 3 `[bell:...]` Acts in 100% `brisk` Tempo with Inline `[screen: ...]` Directives**:
+   - Use `<pause>` (and `<pause> <pause>` for longer beats—never `<short pause>`, never `[style:resonant]`).
+   - Place inline `[screen: <step_num> · <STEP_KIND> | <symbolic> | just: <just_id>]` cues in `script.txt` directly above each spoken paragraph so `script.txt` serves as the single human-editable source of truth for both narration and screen steps (`scenes.json`):
+     - `[bell:proposition]` — Enunciation & Given (*Protasis* & *Ekthesis*).
+     - `[bell:construction]` — Step-by-step compass & straightedge construction (*Kataskeuē*) with `:just:` postulates/propositions.
+     - `[bell:insight]` — Equality assertions (*Apodeixis*, **one equality statement per sub-slide**) with green tick marks (`|`) and `Q.E.F.` / `Q.E.D.` (*Symperasma*).
+3. **Synthesize, Render Dual `9:16` + `16:9` (`2560×1440` QHD VP9), Verify & Symlink to `/home/phi/MEDIA`**:
+   - Run `python3 scripts/build_prop_video.py videos/book_<b>/<nn> --tts` (or `studio render videos/book_<b>/<nn> --tts`) which:
+     1. Synthesizes `<prefix>.wav` + `<prefix>.json` via Argon III-C (`speak.py`).
+     2. Renders `<prefix>_short.mp4` (`1080×1920` `9:16`) and `<prefix>_1080p.mp4` (`2560×1440` `1440p QHD` so YouTube encodes `vp09`).
+     3. Verifies stream/thumbnail compliance via `studio verify` and purges Tier 3 scratch (`*_stage.html`, `slides_*/`).
+   - Run `studio archive link videos/book_<b>/<nn> geometor/elements/videos/book_<b>/<nn> --execute` to move `.mp4`/`.wav`/thumbnails to `/home/phi/MEDIA/` and leave symlinks in `elements/videos/`.
 4. **Seamless In-Conversation Skill Switching**: From the main agent, you can switch freely between `producer`, `euclid-shorts`, `shorts`, `presenter`, `podcaster`, and `dialogue` in the same conversation thread.
