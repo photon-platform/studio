@@ -11,8 +11,8 @@ from .archive import clean_scratch
 from .verify import MAX_THUMBNAIL_BYTES, verify_package_dir, verify_video_file
 
 
-DEFAULT_SHORTS_PY = Path("/home/phi/.gemini/config/skills/shorts/scripts/shorts.py")
-DEFAULT_SPEAK_PY = Path("/home/phi/.gemini/config/skills/dialogue/scripts/speak.py")
+DEFAULT_SHORTS_PY = Path(__file__).resolve().parent / "engines" / "shorts.py"
+DEFAULT_SPEAK_PY = Path(__file__).resolve().parent / "engines" / "speak.py"
 
 
 def build_ffmpeg_encode_cmd(
@@ -123,7 +123,7 @@ def build_ffmpeg_encode_cmd(
 
 def ensure_compressed_thumbnail(thumb_path: Path) -> Path:
     """Ensure a thumbnail is < 2 MB for YouTube API upload by converting PNG to JPEG if needed."""
-    thumb_path = Path(thumb_path).resolve()
+    thumb_path = Path(thumb_path)
     if not thumb_path.exists():
         raise FileNotFoundError(f"Thumbnail not found: {thumb_path}")
 

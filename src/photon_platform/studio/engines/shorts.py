@@ -609,8 +609,13 @@ def _svg_step_script(scene: dict) -> str:
         if (!el) return;
         const effCls = (isEtcDrawing && el.classList.contains('target')) ? 'geom-color-gold' : cls;
         el.classList.remove('geom-step-hidden', 'geom-step-ghost');
-        el.classList.remove(...ALL_COLOR_CLASSES);
-        el.classList.add('geom-active-any', effCls);
+        const keepActiveGold = (tickCls && !isEtcDrawing && el.classList.contains('geom-highlight-active'));
+        if (!keepActiveGold) {{
+          el.classList.remove(...ALL_COLOR_CLASSES);
+          el.classList.add('geom-active-any', effCls);
+        }} else {{
+          el.classList.add('geom-assert-active');
+        }}
         if (tickCls) el.classList.add(tickCls);
         anyHighlighted = true;
         const elId = el.getAttribute('id') || el.getAttribute('data-id') || '';
@@ -844,8 +849,12 @@ def _svg_step_script(scene: dict) -> str:
         }});
       }}
 
-      (STATE.active_ids || []).forEach((id) => applyTokenHighlight(id, 'geom-color-gold', null));
-      (STATE.coincide_ids || []).forEach((id) => applyTokenHighlight(id, 'geom-color-blue', null));
+      const activeCls = isEtcDrawing ? 'geom-color-gold' : 'geom-highlight-active';
+      const coincideCls = isEtcDrawing ? 'geom-color-blue' : 'geom-coincide-active';
+      const equalCls = isEtcDrawing ? 'geom-color-green' : 'geom-assert-active';
+
+      (STATE.active_ids || []).forEach((id) => applyTokenHighlight(id, activeCls, null));
+      (STATE.coincide_ids || []).forEach((id) => applyTokenHighlight(id, coincideCls, null));
 
       // Draw curved dotted correspondence arcs between coinciding points (e.g. [["el-pt-A", "el-pt-D"]])
       (STATE.coincide_pairs || []).forEach((pair) => {{
@@ -869,10 +878,10 @@ def _svg_step_script(scene: dict) -> str:
         ptsGroup.insertBefore(arc, ptsGroup.firstChild);
       }});
 
-      (STATE.equal_ids || []).forEach((id) => applyTokenHighlight(id, 'geom-color-green', null));
-      (STATE.tick_ids || []).forEach((id) => applyTokenHighlight(id, 'geom-color-green', 'geom-tick-1'));
-      (STATE.tick_2_ids || []).forEach((id) => applyTokenHighlight(id, 'geom-color-green', 'geom-tick-2'));
-      (STATE.tick_3_ids || []).forEach((id) => applyTokenHighlight(id, 'geom-color-green', 'geom-tick-3'));
+      (STATE.equal_ids || []).forEach((id) => applyTokenHighlight(id, equalCls, null));
+      (STATE.tick_ids || []).forEach((id) => applyTokenHighlight(id, equalCls, 'geom-tick-1'));
+      (STATE.tick_2_ids || []).forEach((id) => applyTokenHighlight(id, equalCls, 'geom-tick-2'));
+      (STATE.tick_3_ids || []).forEach((id) => applyTokenHighlight(id, equalCls, 'geom-tick-3'));
 
       if (anyHighlighted && isEtcDrawing) {{
         svg.classList.add('has-step-highlights');

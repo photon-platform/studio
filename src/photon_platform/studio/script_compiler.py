@@ -99,13 +99,28 @@ class EuclidSvgIndex:
                     if el_id.startswith("el-seg-"):
                         self._add(self.ref_to_seg_ids, r, el_id)
 
+    @staticmethod
+    def _defining_points(t: str) -> list[str]:
+        """Extract defining point symbols from `/ A B /`, `[ A B ]`, `( A B )`, or `< A B C >`."""
+        m = re.match(r"^(?:/|\[|\(|<|\^)\s*(.+?)\s*(?:/|\]|\)|>|\^)$", t)
+        if not m:
+            return []
+        return [p for p in m.group(1).split() if re.match(r"^[A-Z][A-Za-z0-9_]*$", p)]
+
     def expand_visible(self, tokens: list[str]) -> list[str]:
         if tokens == ["*"]:
             return ["*"]
         els: list[str] = []
         lbls: list[str] = []
+        expanded_tokens: list[str] = []
         for tok in tokens:
             t = _normalize_geom_ref(tok)
+            if t not in expanded_tokens:
+                expanded_tokens.append(t)
+            for pt in self._defining_points(t):
+                if pt not in expanded_tokens:
+                    expanded_tokens.append(pt)
+        for t in expanded_tokens:
             for eid in self.ref_to_el_ids.get(t, []):
                 if eid not in els:
                     els.append(eid)
@@ -114,18 +129,33 @@ class EuclidSvgIndex:
                     lbls.append(lid)
         return els + lbls
 
-    def expand_active_or_equal(self, tokens: list[str]) -> list[str]:
+    def expand_active_or_equal(self, tokens: list[str], exclude_Ids: set[str] | None = None, only_polygon_pts: bool = False) -> list[str]:
+        excl = exclude_Ids or set()
         out: list[str] = []
+        # 1. Primary stated tokens (lines, circles, polygons, or explicit points)
+        defining_pts: list[str] = []
         for tok in tokens:
             t = _normalize_geom_ref(tok)
             for eid in self.ref_to_el_ids.get(t, []):
-                if eid not in out:
+                if eid not in out and eid not in excl:
                     out.append(eid)
             for hid in self.ref_to_hl_ids.get(t, []):
-                if hid not in out:
+                if hid not in out and hid not in excl:
                     out.append(hid)
             for lid in self.ref_to_lbl_ids.get(t, []):
-                if lid not in out:
+                if lid not in out and lid not in excl:
+                    out.append(lid)
+            if not only_polygon_pts or t.startswith("<"):
+                for pt in self._defining_points(t):
+                    if pt not in defining_pts:
+                        defining_pts.append(pt)
+        # 2. Automatically highlight defining points of stated lines/circles/polygons
+        for pt in defining_pts:
+            for eid in self.ref_to_el_ids.get(pt, []):
+                if eid not in out and eid not in excl:
+                    out.append(eid)
+            for lid in self.ref_to_lbl_ids.get(pt, []):
+                if lid not in out and lid not in excl:
                     out.append(lid)
         return out
 
@@ -487,9 +517,10 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
                 weight = scr["weight"] if scr["weight"] is not None else round(auto_w, 2)
 
                 vis_ids = svg_index.expand_visible(scr["show"] or ["*"])
-                act_ids = svg_index.expand_active_or_equal(scr["active"])
-                eq_ids = svg_index.expand_active_or_equal(scr["equal"])
-                t_ids = svg_index.expand_ticks(scr["ticks"])
+                # For active: if a polygon `< A B C >` is active and equal sides are also listed, don't auto-pull circle center points into equal
+                act_ids = svg_index.expand_active_or_equal(scr["active"], only_polygon_pts=bool(scr["equal"]))
+                eq_ids = svg_index.expand_active_or_equal(scr["equal"], exclude_Ids=set(act_ids))
+                t_ids = svg_index.expand_ticks(scr["ticks"] or scr["equal"])
 
                 j_parts = [p.strip() for p in scr["just_raw"].split("|")] if scr["just_raw"] else []
                 just_id = j_parts[0] if len(j_parts) >= 1 else ""
