@@ -218,6 +218,131 @@ def parse_script_segments(
   return segments
 
 
+
+
+# --- STUDIO .SCR & [SFX:...] & CACHE EXTENSIONS ---
+import hashlib
+
+SFX_FREQS: dict[str, tuple[list[float], float, float]] = {
+    # cue: (freqs_hz, duration_sec, amplitude)
+    "point": ([1046.5, 1567.98], 0.14, 0.10),
+    "segment": ([440.0, 659.25, 880.0], 0.22, 0.11),
+    "line": ([440.0, 659.25, 880.0], 0.22, 0.11),
+    "circle": ([392.0, 587.33, 783.99, 1174.66], 0.30, 0.11),
+    "intersect": ([880.0, 1318.51], 0.18, 0.12),
+    "concur": ([523.25, 659.25, 783.99, 1046.5], 0.26, 0.12),
+    "equal": ([523.25, 783.99], 0.24, 0.12),
+    "ratio": ([493.88, 739.99, 987.77], 0.24, 0.11),
+    "conjugate": ([659.25, 523.25, 783.99], 0.25, 0.11),
+    "invariant": ([349.23, 523.25, 698.46, 1046.5], 0.32, 0.12),
+    "qed": ([523.25, 659.25, 783.99, 1046.5], 0.38, 0.14),
+}
+
+SFX_RE = re.compile(r"\[sfx:([a-z0-9_]+)\]", flags=re.I)
+
+
+def extract_sfx_cues(text: str) -> tuple[list[str], str]:
+    cues = [m.group(1).lower() for m in SFX_RE.finditer(text)]
+    cleaned = SFX_RE.sub("", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cues, cleaned
+
+
+def make_sfx_pcm(cue: str) -> bytes:
+    spec = SFX_FREQS.get(cue.lower())
+    if not spec:
+        return b""
+    freqs, dur, amp = spec
+    return make_harmonic_bell_pcm(freqs, duration=dur, amp=amp)
+
+
+def synth_pcm_cached(
+    voice_id: str,
+    text: str,
+    style: str,
+    model: str,
+    api_key: str,
+    cache_dir: Path | None = None,
+) -> bytes:
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(f"{model}|{voice_id}|{style}|{text}".encode("utf-8")).hexdigest()[:24]
+        cache_file = cache_dir / f"{key}.pcm"
+        if cache_file.exists() and cache_file.stat().st_size > 0:
+            return cache_file.read_bytes()
+        pcm = synth_pcm_bytes(voice_id, text, style, model, api_key)
+        cache_file.write_bytes(pcm)
+        return pcm
+    return synth_pcm_bytes(voice_id, text, style, model, api_key)
+
+
+def parse_structured_scr_segments(
+    script_text: str, profile: dict
+) -> list[tuple[str | None, list[tuple[str, str]]]] | None:
+    """If script_text uses `[screen: ...]` blocks or `=== <section> ===` headers,
+    group by section/bell and make each screen's `say:` line a 1-to-1 phrase subsegment."""
+    if not (
+        re.search(r"^\s*\[screen\s*:", script_text, re.I | re.M)
+        or re.search(r"^\s*===+\s*.+?\s*===+\s*$", script_text, re.M)
+    ):
+        return None
+
+    styles = profile["styles"]
+    default_key = profile.get("default_style", "brisk")
+    bells_cfg = profile.get("bells", {})
+
+    sections: list[dict] = []
+    cur_sec: dict | None = None
+    cur_style_key = default_key
+
+    def _ensure_sec() -> dict:
+        nonlocal cur_sec
+        if cur_sec is None:
+            cur_sec = {"bell": None, "phrases": []}
+            sections.append(cur_sec)
+        return cur_sec
+
+    for raw_line in script_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if re.match(r"^===+\s*(.+?)\s*===+$", line):
+            cur_sec = {"bell": None, "phrases": []}
+            sections.append(cur_sec)
+            cur_style_key = default_key
+            continue
+        m_bell = re.match(r"^\[(bell:[a-z_]+)\]$", line, flags=re.I)
+        if m_bell:
+            b_key = m_bell.group(1).lower()
+            if cur_sec is not None and cur_sec["phrases"]:
+                cur_sec = {"bell": b_key, "phrases": []}
+                sections.append(cur_sec)
+            else:
+                sec = _ensure_sec()
+                sec["bell"] = b_key
+            bell_cfg = bells_cfg.get(b_key, {})
+            cur_style_key = bell_cfg.get("auto_style", default_key)
+            if cur_style_key not in styles:
+                cur_style_key = default_key
+            continue
+        m_style = re.match(r"^\[style:([a-z_]+)\]$", line, flags=re.I)
+        if m_style:
+            req = m_style.group(1).lower()
+            if req in styles:
+                cur_style_key = req
+            continue
+        m_say = re.match(r"^say\s*:\s*(.+)$", line, flags=re.I)
+        if m_say:
+            sec = _ensure_sec()
+            sec["phrases"].append((styles[cur_style_key], m_say.group(1).strip()))
+
+    out: list[tuple[str | None, list[tuple[str, str]]]] = []
+    for sec in sections:
+        if sec["phrases"]:
+            out.append((sec["bell"], sec["phrases"]))
+    return out if out else None
+
+
 def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
   api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
   if not api_key:
@@ -229,7 +354,8 @@ def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
   pronunciations = profile.get("pronunciations", {})
   bells_cfg = profile.get("bells", {})
 
-  segments = parse_script_segments(script_text, profile)
+  segments = parse_structured_scr_segments(script_text, profile) or parse_script_segments(script_text, profile)
+  cache_dir = output_wav.parent / '.tts_cache'
   if not segments:
     raise ValueError("No spoken text found in script")
 
@@ -272,13 +398,20 @@ def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
         p_chunks.append(sil)
         sub_cursor += len(sil) // 2
 
-      clean_text = apply_pronunciations(raw_phrase, pronunciations)
-      pcm = synth_pcm_bytes(voice_id, clean_text, style_str, model, api_key)
+      sfx_cues, phrase_no_sfx = extract_sfx_cues(raw_phrase)
+      for cue in sfx_cues:
+        sfx_bytes = make_sfx_pcm(cue)
+        if sfx_bytes:
+          seg_chunks.append(sfx_bytes)
+          p_chunks.append(sfx_bytes)
+          sub_cursor += len(sfx_bytes) // 2
+      clean_text = apply_pronunciations(phrase_no_sfx, pronunciations)
+      pcm = synth_pcm_cached(voice_id, clean_text, style_str, model, api_key, cache_dir=cache_dir)
       seg_chunks.append(pcm)
       p_chunks.append(pcm)
       sub_cursor += len(pcm) // 2
 
-      sub_clean_caption = SINGLE_PAUSE_RE.sub(" ", raw_phrase)
+      sub_clean_caption = SINGLE_PAUSE_RE.sub(" ", phrase_no_sfx)
       sub_clean_caption = re.sub(r"\s+", " ", sub_clean_caption).strip()
       subsegments.append({
           "index": p_idx,

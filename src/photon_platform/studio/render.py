@@ -158,8 +158,9 @@ def render_package(
 ) -> dict[str, Any]:
     """Render a dual-format package directory, verify with ffprobe, and optionally purge Tier 3 scratch."""
     package_dir = Path(package_dir).resolve()
-    scenes_json = package_dir / "scenes.json"
-    script_txt = package_dir / "script.txt"
+    script_scr = package_dir / "script.scr"
+    script_txt = script_scr if script_scr.exists() else (package_dir / "script.txt")
+    scenes_source = script_scr if script_scr.exists() else (package_dir / "scenes.json")
 
     if not prefix:
         # Infer prefix from existing .wav/.json or parent folder
@@ -187,15 +188,15 @@ def render_package(
         if res_tts.returncode != 0:
             return {"status": "error", "stage": "speak", "stderr": res_tts.stderr.strip()}
 
-    if not scenes_json.exists():
-        return {"status": "error", "error": f"Missing {scenes_json}"}
+    if not scenes_source.exists():
+        return {"status": "error", "error": f"Missing {scenes_source}"}
 
     res_render = subprocess.run(
         [
             sys.executable,
             str(DEFAULT_SHORTS_PY),
             "-s",
-            str(scenes_json),
+            str(scenes_source),
             "-m",
             str(manifest_json),
             "-o",

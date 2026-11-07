@@ -58,7 +58,7 @@ def find_chrome() -> Path:
 def clean_caption_text(text: str) -> str:
   text = re.sub(r"</div\s*>|<br\s*/?>", " ", text, flags=re.I)
   text = re.sub(r"<[^>]+>", "", text)
-  text = re.sub(r"\[(?:bell|style):[^\]]+\]", "", text)
+  text = re.sub(r"\[(?:bell|style|sfx):[^\]]+\]", "", text)
   return re.sub(r"\s+", " ", text).strip()
 
 
@@ -3402,7 +3402,15 @@ def render_shorts_sequence(
     meta_only: bool = False,
     reuse_frames: bool = False,
 ) -> dict:
-  scenes = json.loads(scenes_path.read_text(encoding="utf-8"))
+  if scenes_path.suffix.lower() in (".scr", ".txt"):
+    import sys as _sys
+    _studio_src = "/home/phi/PROJECTS/photon-platform/studio/src"
+    if _studio_src not in _sys.path:
+      _sys.path.insert(0, _studio_src)
+    from photon_platform.studio.script_compiler import load_scenes_or_compile_scr
+    scenes = load_scenes_or_compile_scr(scenes_path)
+  else:
+    scenes = json.loads(scenes_path.read_text(encoding="utf-8"))
   manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
   segments = manifest.get("segments", [])
   audio_wav = Path(manifest["audio_wav"])
