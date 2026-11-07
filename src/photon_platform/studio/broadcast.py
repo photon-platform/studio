@@ -454,12 +454,12 @@ def repair_package(package_dir: Path) -> dict[str, Any]:
             return res
         return {"status": "noop", "message": "GOR-9 package already has thumbnail_uploaded=true"}
 
-    etc_uploader = PROJECT_ROOTS["etc"] / "scripts" / "upload_youtube.py"
-    if (package_dir / "youtube.json").exists() and etc_uploader.exists():
+    if (package_dir / "youtube.json").exists():
         proc = subprocess.run(
             [
                 sys.executable,
-                str(etc_uploader),
+                "-m",
+                "photon_platform.studio.uploader",
                 str(package_dir),
                 "--sync-missing",
                 "--no-captions",

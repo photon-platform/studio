@@ -1,0 +1,48 @@
+{
+  "voice_id": "voice_xdhacg1pn1cq",
+  "display_name": "Argon III-C • Composed Stillness",
+  "model": "gemini-3.8-flash-tts",
+  "type": "prompted",
+  "gender": "male",
+  "language_code": "en-US",
+  "prompt": "A resonant yet weightless light-tenor voice with a neutral mid-Atlantic inflection—calm, nimble, and articulate, with a composed stillness and understated warmth.",
+  "styles": {
+    "brisk": "speaking briskly, nimble, crisp, and composed",
+    "resonant": "speaking with a warm, composed, slightly measured cadence",
+    "playful": "speaking briskly, dryly amused, and playful"
+  },
+  "default_style": "brisk",
+  "pronunciations": {
+    "Hoenen": "Hoonen",
+    "Pacioli": "Pachioli",
+    "GEOMETOR": "geometor"
+  },
+  "bells": {
+    "bell:context": {
+      "freqs": [440.0, 660.0],
+      "duration": 0.45,
+      "amp": 0.14
+    },
+    "bell:proposition": {
+      "freqs": [440.0, 880.0],
+      "duration": 0.45,
+      "amp": 0.15
+    },
+    "bell:construction": {
+      "freqs": [528.0, 792.0],
+      "duration": 0.45,
+      "amp": 0.15
+    },
+    "bell:insight": {
+      "freqs": [440.0, 711.935, 880.0],
+      "duration": 0.68,
+      "amp": 0.16
+    },
+    "bell:punchline": {
+      "freqs": [587.33, 880.0, 1174.66],
+      "duration": 0.40,
+      "amp": 0.14,
+      "auto_style": "playful"
+    }
+  }
+}

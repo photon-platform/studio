@@ -113,6 +113,15 @@ def cli(argv: list[str] | None = None) -> int:
     p_bsched.add_argument("--step-hours", type=float, default=4.0)
     p_bsched.add_argument("--dry-run", action="store_true")
 
+    bcast_sub.add_parser("upload", help="Run central YouTube Data API v3 uploader (--centers, --props, --topics, --replace, --sync-missing, --publish)")
+
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if len(raw_argv) >= 2 and raw_argv[0] == "broadcast" and raw_argv[1] == "upload":
+        from .uploader import main as uploader_main
+
+        uploader_main(raw_argv[2:])
+        return 0
+
     args = parser.parse_args(argv)
 
     if args.command == "verify":
