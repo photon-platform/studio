@@ -427,7 +427,7 @@ def discover_all_packages(project_filter: str | None = None) -> dict[str, Any]:
 
 
 def repair_package(package_dir: Path) -> dict[str, Any]:
-    """Repair missing thumbnails on an already-uploaded package (e.g. GOR-9 Ep01)."""
+    """Repair missing thumbnails and playlist items on an already-uploaded package."""
     package_dir = Path(package_dir).resolve()
     gor_yt = package_dir / "youtube" / "youtube.json"
     if gor_yt.exists():
@@ -453,7 +453,28 @@ def repair_package(package_dir: Path) -> dict[str, Any]:
             return res
         return {"status": "noop", "message": "GOR-9 package already has thumbnail_uploaded=true"}
 
-    return {"status": "noop", "message": "Use project upload wrapper or studio broadcast sync"}
+    etc_uploader = PROJECT_ROOTS["etc"] / "scripts" / "upload_youtube.py"
+    if (package_dir / "youtube.json").exists() and etc_uploader.exists():
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(etc_uploader),
+                str(package_dir),
+                "--sync-missing",
+                "--no-captions",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return {
+            "status": "ok" if proc.returncode == 0 else "error",
+            "package_dir": str(package_dir),
+            "stdout": proc.stdout[-1200:],
+            "stderr": proc.stderr[-600:],
+        }
+
+    return {"status": "noop", "message": "No youtube.json found to repair"}
 
 
 def schedule_packages(
