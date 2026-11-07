@@ -378,7 +378,7 @@ def discover_all_packages(project_filter: str | None = None) -> dict[str, Any]:
     packages: list[dict[str, Any]] = []
 
     if project_filter in (None, "elements"):
-        elem_vids = PROJECT_ROOTS["elements"] / "resources" / "videos"
+        elem_vids = PROJECT_ROOTS["elements"] / "videos"
         if elem_vids.exists():
             for book_dir in sorted(elem_vids.glob("book_*")):
                 for prop_dir in sorted(book_dir.iterdir()):
@@ -386,7 +386,7 @@ def discover_all_packages(project_filter: str | None = None) -> dict[str, Any]:
                         packages.append(inspect_package(prop_dir, "elements"))
 
     if project_filter in (None, "etc"):
-        etc_vids = PROJECT_ROOTS["etc"] / "resources" / "videos"
+        etc_vids = PROJECT_ROOTS["etc"] / "videos"
         if etc_vids.exists():
             for item in sorted(etc_vids.iterdir()):
                 if item.is_dir() and item.name != "topics":

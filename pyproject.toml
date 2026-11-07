@@ -12,14 +12,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
 ]
-dependencies = [
-    "click>=8.1",
-    "rich>=13.0",
-    "mcp>=1.0",
-]
+dependencies = []
 
 [project.scripts]
-studio = "photon_platform.studio.__main__:cli"
+studio = "photon_platform.studio.__main__:run"
 studio-mcp = "photon_platform.studio.mcp_server:main"
 
 [build-system]
