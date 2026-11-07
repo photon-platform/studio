@@ -182,6 +182,7 @@ def generate_systemd_mount_unit(
     write_unit: bool = False,
 ) -> dict[str, Any]:
     """Generate a systemd --user service unit for mounting Google Drive at /home/phi/MEDIA."""
+    rclone_bin = shutil.which("rclone") or str(Path.home() / ".local" / "bin" / "rclone")
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_path = unit_dir / "photon-media-mount.service"
     content = f"""[Unit]
@@ -192,7 +193,7 @@ Wants=network-online.target
 [Service]
 Type=notify
 ExecStartPre=/usr/bin/mkdir -p {mount_dir}
-ExecStart=/usr/bin/rclone mount {remote} {mount_dir} \\
+ExecStart={rclone_bin} mount {remote} {mount_dir} \\
     --vfs-cache-mode full \\
     --vfs-cache-max-size 50G \\
     --vfs-cache-max-age 168h \\
@@ -208,11 +209,14 @@ WantedBy=default.target
     if write_unit:
         unit_dir.mkdir(parents=True, exist_ok=True)
         unit_path.write_text(content, encoding="utf-8")
+        ensure_rclone_filter()
+        mount_dir.mkdir(parents=True, exist_ok=True)
 
     return {
         "unit_path": str(unit_path),
         "mount_dir": str(mount_dir),
         "remote": remote,
+        "rclone_bin": rclone_bin,
         "written": write_unit,
         "content": content,
         "enable_command": "systemctl --user daemon-reload && systemctl --user enable --now photon-media-mount.service",
@@ -227,15 +231,15 @@ def sync_archive(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Sync Tier 2 master media between local_dir and Google Drive (or /home/phi/MEDIA)."""
-    rclone_bin = shutil.which("rclone")
+    rclone_bin = shutil.which("rclone") or str(Path.home() / ".local" / "bin" / "rclone")
     filter_file = ensure_rclone_filter()
     local_dir = Path(local_dir).resolve()
     remote_target = f"{remote.rstrip('/')}/{rel_subpath.strip('/')}"
 
-    if not rclone_bin:
+    if not Path(rclone_bin).exists():
         return {
             "status": "error",
-            "error": "rclone is not installed yet. Install with: sudo apt install rclone",
+            "error": "rclone is not installed yet.",
             "filter_file": str(filter_file),
             "planned_remote": remote_target,
         }
@@ -269,3 +273,42 @@ def sync_archive(
         "stdout": res.stdout.strip(),
         "stderr": res.stderr.strip(),
     }
+
+
+PROJECT_ARCHIVE_TARGETS: list[tuple[str, Path, str]] = [
+    ("elements", Path("/home/phi/PROJECTS/geometor/elements/videos"), "geometor/elements/videos"),
+    ("etc", Path("/home/phi/PROJECTS/geometor/etc/videos"), "geometor/etc/videos"),
+    ("phyllotaxis", Path("/home/phi/PROJECTS/geometor/phyllotaxis/videos"), "geometor/phyllotaxis/videos"),
+    ("GOR-9", Path("/home/phi/PROJECTS/phiarchitect/GOR-9/episodes"), "phiarchitect/GOR-9/episodes"),
+]
+
+
+def sync_all_projects(
+    direction: str = "push",
+    remote: str = DEFAULT_GDRIVE_REMOTE,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Sync Tier 2 master media across all 4 projects (elements, etc, phyllotaxis, GOR-9)."""
+    results: dict[str, Any] = {}
+    all_ok = True
+    for name, local_dir, rel_subpath in PROJECT_ARCHIVE_TARGETS:
+        if not local_dir.exists():
+            continue
+        res = sync_archive(
+            local_dir=local_dir,
+            rel_subpath=rel_subpath,
+            direction=direction,
+            remote=remote,
+            dry_run=dry_run,
+        )
+        results[name] = res
+        if res.get("status") != "ok":
+            all_ok = False
+    return {
+        "status": "ok" if all_ok else "error",
+        "direction": direction,
+        "remote": remote,
+        "dry_run": dry_run,
+        "projects": results,
+    }
+

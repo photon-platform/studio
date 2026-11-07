@@ -11,6 +11,7 @@ from .archive import (
     clean_scratch,
     generate_systemd_mount_unit,
     scan_storage,
+    sync_all_projects,
     sync_archive,
 )
 from .broadcast import (
@@ -80,6 +81,10 @@ def cli(argv: list[str] | None = None) -> int:
     p_async.add_argument("--direction", choices=["push", "pull"], default="push")
     p_async.add_argument("--dry-run", action="store_true")
 
+    p_async_all = arch_sub.add_parser("sync-all", help="Sync Tier 2 master media across all 4 projects (elements, etc, phyllotaxis, GOR-9)")
+    p_async_all.add_argument("--direction", choices=["push", "pull"], default="push")
+    p_async_all.add_argument("--dry-run", action="store_true")
+
     # 6. broadcast
     p_bcast = sub.add_parser("broadcast", help="Coordinate shared YouTube API quota, schedules, and uploads")
     bcast_sub = p_bcast.add_subparsers(dest="broadcast_cmd", required=True)
@@ -146,6 +151,13 @@ def cli(argv: list[str] | None = None) -> int:
                 sync_archive(
                     args.local_dir,
                     args.rel_subpath,
+                    direction=args.direction,
+                    dry_run=args.dry_run,
+                )
+            )
+        elif args.archive_cmd == "sync-all":
+            _print_json(
+                sync_all_projects(
                     direction=args.direction,
                     dry_run=args.dry_run,
                 )
