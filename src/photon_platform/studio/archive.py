@@ -1,225 +1,143 @@
-"""3-Tier Media Storage Manager: Scratch cleanup and Google Drive rclone vault sync."""
+"""3-Tier Storage & Google Drive Archive Manager (No Symlinks).
+
+Tier 1 (Git-Tracked Source):
+  - script.scr, script.txt, *.svg, *.srt, *.vtt, youtube.json, youtube.txt
+Tier 2 (Local Git-Ignored Master Media, backed up via rclone to gdrive:PHOTON-MEDIA):
+  - *_1080p.mp4 (2560x1440 QHD), *_short.mp4 (1080x1920), *.wav, *_thumb.png, *_thumb.jpg
+Tier 3 (Ephemeral Build Scratch — Purged after verification):
+  - *_stage.html, slides_16x9/, slides_9x16/, frames_*/, _raw_*.png
+"""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
 from typing import Any
 
 
-DEFAULT_MEDIA_MOUNT = Path("/home/phi/MEDIA")
-DEFAULT_GDRIVE_REMOTE = "gdrive:PHOTON-MEDIA"
-DEFAULT_FILTER_FILE = Path.home() / ".config" / "geometor" / "rclone_media.filter"
+DEFAULT_RCLONE_REMOTE = "gdrive:PHOTON-MEDIA"
 
-RCLONE_FILTER_CONTENT = """# PHOTON Studio Tier 2 Master Media Filter for rclone
-# Exclude Tier 3 Ephemeral Build Scratch
-- **/slides_16x9/**
-- **/slides_9x16/**
-- **/frames_cold_open_3d/**
-- **/slides_cold_open_3d/**
-- **/previews/**
-- **/*_work/**
-- **/*_stage.html
-- **/*_16x9_*.png
-- **/*_9x16_*.png
-- **/_*_concat.txt
-- **/__pycache__/**
+TIER1_EXTENSIONS = {".scr", ".txt", ".json", ".srt", ".vtt", ".svg", ".md", ".py", ".rst"}
+TIER2_EXTENSIONS = {".mp4", ".wav", ".flac", ".m4a", ".mov", ".mkv"}
+SCRATCH_DIR_PREFIXES = ("slides_", "frames_", "_tmp_", "work_")
 
-# Include Tier 2 Master Media & Reusable Generative Assets
-+ **/*.mp4
-+ **/*.mov
-+ **/*.wav
-+ **/*thumb*.jpg
-+ **/*thumb*.png
-+ **/clips/**
-+ **/plates/**
-+ **/console_plates/**
-+ **/youtube.json
-
-# Exclude everything else (Tier 1 text/code already tracked in Git)
-- *
-"""
-
-SCRATCH_DIRS = (
-    "slides_16x9",
-    "slides_9x16",
-    "frames_cold_open_3d",
-    "slides_cold_open_3d",
-    "previews",
-)
+PROJECT_ARCHIVE_MAP: dict[str, tuple[Path, str]] = {
+    "elements": (Path("/home/phi/PROJECTS/geometor/elements/videos"), "geometor/elements/videos"),
+    "etc": (Path("/home/phi/PROJECTS/geometor/etc/videos"), "geometor/etc/videos"),
+    "phyllotaxis": (Path("/home/phi/PROJECTS/geometor/phyllotaxis/videos"), "geometor/phyllotaxis/videos"),
+    "GOR-9": (Path("/home/phi/PROJECTS/phiarchitect/GOR-9/episodes"), "phiarchitect/GOR-9/episodes"),
+}
 
 
 def classify_file(path: Path) -> str:
-    """Classify a file inside a video/episode folder into tier1_git, tier2_vault, or tier3_scratch."""
-    parts = set(path.parts)
+    """Classify a file into 'tier1_git', 'tier2_master', or 'tier3_scratch'."""
     name = path.name
-    for d in SCRATCH_DIRS:
-        if d in parts or name.endswith("_work"):
+    suffix = path.suffix.lower()
+
+    for parent in path.parents:
+        if any(parent.name.startswith(pref) for pref in SCRATCH_DIR_PREFIXES):
             return "tier3_scratch"
-    if (
-        name.endswith("_stage.html")
-        or (name.startswith("_") and name.endswith("_concat.txt"))
-        or ("_16x9_" in name and name.endswith(".png") and "thumb" not in name)
-        or ("_9x16_" in name and name.endswith(".png") and "thumb" not in name)
-    ):
+
+    if name.endswith("_stage.html") or name.startswith("_raw_"):
         return "tier3_scratch"
 
-    if (
-        name.endswith((".mp4", ".mov", ".wav"))
-        or "thumb" in name
-        or "clips" in parts
-        or "plates" in parts
-        or "console_plates" in parts
-    ):
-        return "tier2_vault"
+    if suffix in TIER2_EXTENSIONS:
+        return "tier2_master"
 
-    return "tier1_git"
+    if suffix in (".png", ".jpg", ".jpeg") and "thumb" in name.lower():
+        return "tier2_master"
+
+    if suffix in TIER1_EXTENSIONS:
+        return "tier1_git"
+
+    return "tier3_scratch"
 
 
 def scan_storage(root_dir: Path) -> dict[str, Any]:
-    """Scan a directory tree and return byte/MB totals for Tier 1, Tier 2, and Tier 3."""
+    """Scan a directory tree and report byte totals across Tier 1, Tier 2, and Tier 3."""
     root_dir = Path(root_dir).resolve()
-    totals = {"tier1_git": 0, "tier2_vault": 0, "tier3_scratch": 0}
-    counts = {"tier1_git": 0, "tier2_vault": 0, "tier3_scratch": 0}
+    totals = {"tier1_git": 0, "tier2_master": 0, "tier3_scratch": 0}
+    counts = {"tier1_git": 0, "tier2_master": 0, "tier3_scratch": 0}
+    scratch_items: list[str] = []
 
     if not root_dir.exists():
-        return {"root": str(root_dir), "exists": False}
+        return {"error": f"Path does not exist: {root_dir}"}
 
-    for p in root_dir.rglob("*"):
-        if not p.is_file():
-            continue
-        size = p.stat().st_size
-        tier = classify_file(p)
-        totals[tier] += size
-        counts[tier] += 1
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dpath = Path(dirpath)
+        for dname in list(dirnames):
+            if any(dname.startswith(pref) for pref in SCRATCH_DIR_PREFIXES):
+                sdir = dpath / dname
+                size = sum(f.stat().st_size for f in sdir.rglob("*") if f.is_file() and not f.is_symlink())
+                totals["tier3_scratch"] += size
+                counts["tier3_scratch"] += 1
+                scratch_items.append(str(sdir))
+                dirnames.remove(dname)
+
+        for fname in filenames:
+            fpath = dpath / fname
+            if fpath.is_symlink() or not fpath.is_file():
+                continue
+            tier = classify_file(fpath)
+            fsize = fpath.stat().st_size
+            totals[tier] += fsize
+            counts[tier] += 1
+            if tier == "tier3_scratch":
+                scratch_items.append(str(fpath))
 
     return {
-        "root": str(root_dir),
-        "exists": True,
-        "tier1_git_mb": round(totals["tier1_git"] / (1024 * 1024), 2),
-        "tier2_vault_mb": round(totals["tier2_vault"] / (1024 * 1024), 2),
-        "tier3_scratch_mb": round(totals["tier3_scratch"] / (1024 * 1024), 2),
-        "total_mb": round(sum(totals.values()) / (1024 * 1024), 2),
+        "root_dir": str(root_dir),
+        "bytes": totals,
+        "megabytes": {k: round(v / (1024 * 1024), 2) for k, v in totals.items()},
         "counts": counts,
+        "scratch_paths": scratch_items,
     }
 
 
-def _package_has_rendered_mp4(pkg_dir: Path) -> bool:
-    """Return True if the package folder already has its rendered .mp4 master(s)."""
-    return any(pkg_dir.glob("*.mp4"))
-
-
-def clean_scratch(
-    root_dir: Path,
-    dry_run: bool = True,
-    require_mp4: bool = True,
-) -> dict[str, Any]:
-    """Remove Tier 3 build scratch (slides_*/, frames_*/, *_stage.html, previews/).
-
-    If require_mp4 is True, only cleans scratch inside package folders that already
-    have their rendered .mp4 master(s).
-    """
+def clean_scratch(root_dir: Path, dry_run: bool = True, require_mp4: bool = True) -> dict[str, Any]:
+    """Purge Tier 3 build scratch (`*_stage.html`, `slides_*/`, `frames_*/`)."""
     root_dir = Path(root_dir).resolve()
-    reclaimed_bytes = 0
-    removed_paths: list[str] = []
-    skipped_unrendered: list[str] = []
+    removed: list[str] = []
+    skipped: list[str] = []
+    freed_bytes = 0
 
-    # 1. Remove scratch directories
-    for dname in SCRATCH_DIRS:
-        for dpath in sorted(root_dir.rglob(dname)):
-            if not dpath.is_dir():
-                continue
-            pkg_dir = dpath.parent
-            if require_mp4 and not _package_has_rendered_mp4(pkg_dir):
-                skipped_unrendered.append(str(dpath))
-                continue
-            dir_bytes = sum(f.stat().st_size for f in dpath.rglob("*") if f.is_file())
-            reclaimed_bytes += dir_bytes
-            removed_paths.append(str(dpath))
-            if not dry_run:
-                shutil.rmtree(dpath, ignore_errors=True)
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dpath = Path(dirpath)
+        has_mp4 = any(f.endswith(".mp4") for f in filenames)
 
-    # 2. Remove individual scratch files (*_stage.html, _*_concat.txt, *_16x9_*.png) outside SCRATCH_DIRS
-    for fpath in sorted(root_dir.rglob("*")):
-        if not fpath.is_file():
-            continue
-        if any(d in fpath.parts for d in SCRATCH_DIRS) or any(part.endswith("_work") for part in fpath.parts[:-1]):
-            continue
-        if classify_file(fpath) != "tier3_scratch":
-            continue
-        pkg_dir = fpath.parent
-        if require_mp4 and not _package_has_rendered_mp4(pkg_dir):
-            skipped_unrendered.append(str(fpath))
-            continue
-        fsize = fpath.stat().st_size
-        reclaimed_bytes += fsize
-        removed_paths.append(str(fpath))
-        if not dry_run:
-            fpath.unlink(missing_ok=True)
+        for dname in list(dirnames):
+            if any(dname.startswith(pref) for pref in SCRATCH_DIR_PREFIXES):
+                sdir = dpath / dname
+                if require_mp4 and not has_mp4:
+                    skipped.append(str(sdir))
+                else:
+                    size = sum(f.stat().st_size for f in sdir.rglob("*") if f.is_file() and not f.is_symlink())
+                    freed_bytes += size
+                    removed.append(str(sdir))
+                    if not dry_run:
+                        shutil.rmtree(sdir, ignore_errors=True)
+                dirnames.remove(dname)
+
+        for fname in filenames:
+            if fname.endswith("_stage.html") or fname.startswith("_raw_"):
+                fpath = dpath / fname
+                if require_mp4 and not has_mp4:
+                    skipped.append(str(fpath))
+                else:
+                    freed_bytes += fpath.stat().st_size
+                    removed.append(str(fpath))
+                    if not dry_run:
+                        fpath.unlink(missing_ok=True)
 
     return {
-        "root": str(root_dir),
+        "root_dir": str(root_dir),
         "dry_run": dry_run,
-        "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 2),
-        "removed_count": len(removed_paths),
-        "removed_sample": removed_paths[:25],
-        "skipped_unrendered_count": len(skipped_unrendered),
-    }
-
-
-def ensure_rclone_filter(filter_path: Path = DEFAULT_FILTER_FILE) -> Path:
-    """Write the canonical rclone Tier 2 media filter file."""
-    filter_path = Path(filter_path)
-    filter_path.parent.mkdir(parents=True, exist_ok=True)
-    filter_path.write_text(RCLONE_FILTER_CONTENT, encoding="utf-8")
-    return filter_path
-
-
-def generate_systemd_mount_unit(
-    remote: str = DEFAULT_GDRIVE_REMOTE,
-    mount_dir: Path = DEFAULT_MEDIA_MOUNT,
-    write_unit: bool = False,
-) -> dict[str, Any]:
-    """Generate a systemd --user service unit for mounting Google Drive at /home/phi/MEDIA."""
-    rclone_bin = shutil.which("rclone") or str(Path.home() / ".local" / "bin" / "rclone")
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
-    unit_path = unit_dir / "photon-media-mount.service"
-    content = f"""[Unit]
-Description=PHOTON Studio Media Vault (rclone Google Drive mount at {mount_dir})
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=notify
-ExecStartPre=/usr/bin/mkdir -p {mount_dir}
-ExecStart={rclone_bin} mount {remote} {mount_dir} \\
-    --vfs-cache-mode full \\
-    --vfs-cache-max-size 50G \\
-    --vfs-cache-max-age 168h \\
-    --dir-cache-time 5m \\
-    --transfers 4
-ExecStop=/bin/fusermount -u {mount_dir}
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-"""
-    if write_unit:
-        unit_dir.mkdir(parents=True, exist_ok=True)
-        unit_path.write_text(content, encoding="utf-8")
-        ensure_rclone_filter()
-        mount_dir.mkdir(parents=True, exist_ok=True)
-
-    return {
-        "unit_path": str(unit_path),
-        "mount_dir": str(mount_dir),
-        "remote": remote,
-        "rclone_bin": rclone_bin,
-        "written": write_unit,
-        "content": content,
-        "enable_command": "systemctl --user daemon-reload && systemctl --user enable --now photon-media-mount.service",
+        "removed_count": len(removed),
+        "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+        "removed": removed,
+        "skipped": skipped,
     }
 
 
@@ -227,40 +145,43 @@ def sync_archive(
     local_dir: Path,
     rel_subpath: str,
     direction: str = "push",
-    remote: str = DEFAULT_GDRIVE_REMOTE,
+    remote_root: str = DEFAULT_RCLONE_REMOTE,
+    transfers: int = 4,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Sync Tier 2 master media between local_dir and Google Drive (or /home/phi/MEDIA)."""
-    rclone_bin = shutil.which("rclone") or str(Path.home() / ".local" / "bin" / "rclone")
-    filter_file = ensure_rclone_filter()
-    local_dir = Path(local_dir).resolve()
-    remote_target = f"{remote.rstrip('/')}/{rel_subpath.strip('/')}"
+    """Push or pull git-ignored Tier 2 master media directly between the project folder and Google Drive via rclone copy.
 
+    Never creates symlinks; files remain real local files in the repository.
+    """
+    rclone_bin = shutil.which("rclone") or "/home/phi/.local/bin/rclone"
     if not Path(rclone_bin).exists():
-        return {
-            "status": "error",
-            "error": "rclone is not installed yet.",
-            "filter_file": str(filter_file),
-            "planned_remote": remote_target,
-        }
+        return {"status": "error", "error": "rclone is not installed."}
+
+    local_dir = Path(local_dir).resolve()
+    remote_target = f"{remote_root.rstrip('/')}/{rel_subpath.strip('/')}"
 
     if direction == "push":
         src, dst = str(local_dir), remote_target
     elif direction == "pull":
         src, dst = remote_target, str(local_dir)
     else:
-        raise ValueError(f"Unsupported direction: {direction}")
+        raise ValueError(f"Invalid direction: {direction}")
 
     cmd = [
         rclone_bin,
         "copy",
         src,
         dst,
-        "--filter-from",
-        str(filter_file),
+        "--include",
+        "*.{mp4,wav,flac,png,jpg}",
+        "--exclude",
+        "slides_*/**",
+        "--exclude",
+        "frames_*/**",
+        "--exclude",
+        ".tts_cache/**",
         "--transfers",
-        "4",
-        "--stats-one-line",
+        str(transfers),
     ]
     if dry_run:
         cmd.append("--dry-run")
@@ -269,136 +190,36 @@ def sync_archive(
     return {
         "status": "ok" if res.returncode == 0 else "error",
         "returncode": res.returncode,
-        "command": cmd,
+        "command": " ".join(cmd),
         "stdout": res.stdout.strip(),
         "stderr": res.stderr.strip(),
     }
 
 
-PROJECT_ARCHIVE_TARGETS: list[tuple[str, Path, str]] = [
-    ("elements", Path("/home/phi/PROJECTS/geometor/elements/videos"), "geometor/elements/videos"),
-    ("etc", Path("/home/phi/PROJECTS/geometor/etc/videos"), "geometor/etc/videos"),
-    ("phyllotaxis", Path("/home/phi/PROJECTS/geometor/phyllotaxis/videos"), "geometor/phyllotaxis/videos"),
-    ("GOR-9", Path("/home/phi/PROJECTS/phiarchitect/GOR-9/episodes"), "phiarchitect/GOR-9/episodes"),
-]
-
-
 def sync_all_projects(
     direction: str = "push",
-    remote: str = DEFAULT_GDRIVE_REMOTE,
+    remote_root: str = DEFAULT_RCLONE_REMOTE,
+    transfers: int = 4,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Sync Tier 2 master media across all 4 projects (elements, etc, phyllotaxis, GOR-9)."""
+    """Sync Tier 2 master media across all active projects directly with Google Drive (no symlinks)."""
     results: dict[str, Any] = {}
-    all_ok = True
-    for name, local_dir, rel_subpath in PROJECT_ARCHIVE_TARGETS:
-        if not local_dir.exists():
+    for proj_name, (local_dir, rel_subpath) in PROJECT_ARCHIVE_MAP.items():
+        if not local_dir.exists() and direction == "push":
+            results[proj_name] = {"status": "skipped", "reason": f"Missing {local_dir}"}
             continue
-        res = sync_archive(
+        local_dir.mkdir(parents=True, exist_ok=True)
+        results[proj_name] = sync_archive(
             local_dir=local_dir,
             rel_subpath=rel_subpath,
             direction=direction,
-            remote=remote,
+            remote_root=remote_root,
+            transfers=transfers,
             dry_run=dry_run,
         )
-        results[name] = res
-        if res.get("status") != "ok":
-            all_ok = False
     return {
-        "status": "ok" if all_ok else "error",
         "direction": direction,
-        "remote": remote,
+        "remote_root": remote_root,
         "dry_run": dry_run,
         "projects": results,
     }
-
-
-def link_to_vault(
-    local_dir: Path,
-    rel_subpath: str,
-    mount_dir: Path = DEFAULT_MEDIA_MOUNT,
-    dry_run: bool = True,
-) -> dict[str, Any]:
-    """Move Tier 2 master binaries to /home/phi/MEDIA/<rel_subpath> and replace local files with symlinks."""
-    local_dir = Path(local_dir).resolve()
-    vault_root = Path(mount_dir) / rel_subpath.strip("/")
-    linked_count = 0
-    already_linked = 0
-    bytes_freed = 0
-    errors: list[str] = []
-
-    if not Path(mount_dir).exists():
-        return {"status": "error", "error": f"Mount directory {mount_dir} does not exist"}
-
-    for p in sorted(local_dir.rglob("*")):
-        if p.is_dir():
-            continue
-        if p.is_symlink():
-            if classify_file(p) == "tier2_vault":
-                already_linked += 1
-            continue
-        if classify_file(p) != "tier2_vault":
-            continue
-
-        rel_p = p.relative_to(local_dir)
-        target_p = vault_root / rel_p
-        size = p.stat().st_size
-
-        if not dry_run:
-            try:
-                target_p.parent.mkdir(parents=True, exist_ok=True)
-                if target_p.exists() and target_p.stat().st_size == size:
-                    p.unlink()
-                else:
-                    shutil.copy2(str(p), str(target_p))
-                    p.unlink()
-                p.symlink_to(target_p)
-                linked_count += 1
-                bytes_freed += size
-            except Exception as exc:
-                errors.append(f"{rel_p}: {exc}")
-        else:
-            linked_count += 1
-            bytes_freed += size
-
-    return {
-        "status": "ok" if not errors else "partial_error",
-        "dry_run": dry_run,
-        "local_dir": str(local_dir),
-        "vault_root": str(vault_root),
-        "linked_count": linked_count,
-        "already_linked": already_linked,
-        "freed_mb": round(bytes_freed / (1024 * 1024), 2),
-        "errors": errors[:20],
-    }
-
-
-def link_all_projects(
-    mount_dir: Path = DEFAULT_MEDIA_MOUNT,
-    dry_run: bool = True,
-) -> dict[str, Any]:
-    """Replace Tier 2 master binaries across all 4 projects with symlinks to /home/phi/MEDIA/."""
-    results: dict[str, Any] = {}
-    total_freed_mb = 0.0
-    total_linked = 0
-    for name, local_dir, rel_subpath in PROJECT_ARCHIVE_TARGETS:
-        if not local_dir.exists():
-            continue
-        res = link_to_vault(
-            local_dir=local_dir,
-            rel_subpath=rel_subpath,
-            mount_dir=mount_dir,
-            dry_run=dry_run,
-        )
-        results[name] = res
-        total_freed_mb += res.get("freed_mb", 0.0)
-        total_linked += res.get("linked_count", 0)
-    return {
-        "dry_run": dry_run,
-        "mount_dir": str(mount_dir),
-        "total_linked": total_linked,
-        "total_freed_mb": round(total_freed_mb, 2),
-        "projects": results,
-    }
-
-

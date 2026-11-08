@@ -94,6 +94,9 @@ def chrome_screenshot(
       else f"file://{Path(url_or_path).resolve()}"
   )
   win_h = height + 100
+  scale_factor = "1.3333333333" if (width == 1920 and height == 1080) else "1"
+  out_w = 2560 if (width == 1920 and height == 1080) else width
+  out_h = 1440 if (width == 1920 and height == 1080) else height
 
   last_err = None
   for attempt in range(3):
@@ -119,7 +122,7 @@ def chrome_screenshot(
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--hide-scrollbars",
-        "--force-device-scale-factor=1",
+        f"--force-device-scale-factor={scale_factor}",
         f"--window-size={width},{win_h}",
         f"--virtual-time-budget={wait_ms}",
         f"--screenshot={raw_png}",
@@ -147,7 +150,7 @@ def chrome_screenshot(
           "/usr/bin/convert",
           str(raw_png),
           "-crop",
-          f"{width}x{height}+0+0",
+          f"{out_w}x{out_h}+0+0",
           "+repage",
           str(out_png),
       ],

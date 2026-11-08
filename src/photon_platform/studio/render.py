@@ -1,4 +1,10 @@
-"""Canonical FFmpeg 1440p QHD (VP9 trigger) and 9:16 Vertical Shorts encoder."""
+"""Canonical FFmpeg 1440p QHD (VP9 trigger) and 9:16 Vertical Shorts encoder.
+
+Codifies two distinct rendering modes:
+  1. mode="slides": Timed static vector slide sequence (-f concat, -tune stillimage, -crf 18, -preset fast).
+  2. mode="motion": 30 fps full-motion 3D/animation sequence (-framerate 30, -crf 16, -preset slow,
+                    temporal dither noise=alls=2:allf=t, and dark-scene aq-mode=3:aq-strength=0.8).
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ import sys
 from typing import Any
 
 from .archive import clean_scratch
-from .verify import MAX_THUMBNAIL_BYTES, verify_package_dir, verify_video_file
+from .verify import MAX_THUMBNAIL_BYTES, verify_package_dir
 
 
 DEFAULT_SHORTS_PY = Path(__file__).resolve().parent / "engines" / "shorts.py"
@@ -20,15 +26,21 @@ def build_ffmpeg_encode_cmd(
     audio_wav: Path,
     output_mp4: Path,
     variant: str = "wide_16x9",
+    mode: str = "slides",
     total_duration: float | None = None,
     is_concat: bool = True,
 ) -> list[str]:
-    """Return the locked FFmpeg command for YouTube 1440p QHD (VP9) or 9:16 Vertical Shorts."""
+    """Return the locked FFmpeg command for YouTube 1440p QHD (VP9) or 9:16 Vertical Shorts.
+
+    Args:
+      variant: 'wide_16x9' (2560x1440 QHD) or 'short_9x16' (1080x1920).
+      mode: 'slides' (static slide sequence) or 'motion' (30 fps full-motion animation).
+    """
     cmd = ["/usr/bin/ffmpeg", "-y"]
     if is_concat:
         cmd.extend(["-f", "concat", "-safe", "0", "-i", str(concat_or_input)])
     else:
-        cmd.extend(["-i", str(concat_or_input)])
+        cmd.extend(["-framerate", "30", "-i", str(concat_or_input)])
 
     cmd.extend([
         "-i",
@@ -46,10 +58,14 @@ def build_ffmpeg_encode_cmd(
     if total_duration is not None and total_duration > 0:
         cmd.extend(["-t", f"{total_duration:.3f}"])
 
-    if variant == "wide_16x9":
+    target_scale = "2560:1440" if variant == "wide_16x9" else "1080:1920"
+    level = "5.1" if variant == "wide_16x9" else "4.1"
+
+    if mode == "motion":
+        vf_str = f"fps=30,scale={target_scale}:flags=lanczos,setsar=1:1,noise=alls=2:allf=t,format=yuv420p"
         cmd.extend([
             "-vf",
-            "fps=30,scale=2560:1440:flags=lanczos,setsar=1:1,format=yuv420p",
+            vf_str,
             "-vsync",
             "cfr",
             "-r",
@@ -57,43 +73,46 @@ def build_ffmpeg_encode_cmd(
             "-c:v",
             "libx264",
             "-preset",
-            "fast",
+            "slow",
             "-profile:v",
             "high",
             "-level:v",
-            "5.1",
+            level,
             "-crf",
-            "18",
+            "16",
+            "-x264-params",
+            "aq-mode=3:aq-strength=0.8",
             "-maxrate",
-            "16M",
+            "24M" if variant == "wide_16x9" else "12M",
             "-bufsize",
-            "32M",
-        ])
-    elif variant == "short_9x16":
-        cmd.extend([
-            "-vf",
-            "fps=30,scale=1080:1920:flags=lanczos,setsar=1:1,format=yuv420p",
-            "-vsync",
-            "cfr",
-            "-r",
-            "30",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-profile:v",
-            "high",
-            "-level:v",
-            "4.1",
-            "-crf",
-            "18",
-            "-maxrate",
-            "10M",
-            "-bufsize",
-            "20M",
+            "48M" if variant == "wide_16x9" else "24M",
         ])
     else:
-        raise ValueError(f"Unknown variant: {variant}")
+        vf_str = f"fps=30,scale={target_scale}:flags=lanczos,setsar=1:1,format=yuv420p"
+        cmd.extend([
+            "-vf",
+            vf_str,
+            "-vsync",
+            "cfr",
+            "-r",
+            "30",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-tune",
+            "stillimage",
+            "-profile:v",
+            "high",
+            "-level:v",
+            level,
+            "-crf",
+            "18",
+            "-maxrate",
+            "16M" if variant == "wide_16x9" else "10M",
+            "-bufsize",
+            "32M" if variant == "wide_16x9" else "20M",
+        ])
 
     cmd.extend([
         "-g",
@@ -153,17 +172,39 @@ def ensure_compressed_thumbnail(thumb_path: Path) -> Path:
 def render_package(
     package_dir: Path,
     prefix: str | None = None,
+    mode: str = "slides",
     tts: bool = False,
     purge_scratch: bool = True,
 ) -> dict[str, Any]:
-    """Render a dual-format package directory, verify with ffprobe, and optionally purge Tier 3 scratch."""
+    """Render a dual-format package directory (mode='slides' or 'motion'), verify with ffprobe, and optionally purge Tier 3 scratch."""
     package_dir = Path(package_dir).resolve()
+
+    if mode == "motion" or (package_dir / "motion.json").exists():
+        from .motion import render_motion_package
+
+        motion_res = render_motion_package(package_dir=package_dir, prefix=prefix)
+        pfx = motion_res.get("prefix") or prefix or package_dir.name
+        for png_thumb in sorted(package_dir.glob("*thumb*.png")):
+            ensure_compressed_thumbnail(png_thumb)
+        verification = verify_package_dir(package_dir)
+        scratch_report = None
+        if purge_scratch and verification.get("all_valid"):
+            scratch_report = clean_scratch(package_dir, dry_run=False, require_mp4=True)
+        return {
+            "status": "ok" if verification.get("all_valid") else "verification_failed",
+            "mode": "motion",
+            "prefix": pfx,
+            "package_dir": str(package_dir),
+            "motion": motion_res,
+            "verification": verification,
+            "scratch_cleaned": scratch_report,
+        }
+
     script_scr = package_dir / "script.scr"
     script_txt = script_scr if script_scr.exists() else (package_dir / "script.txt")
     scenes_source = script_scr if script_scr.exists() else (package_dir / "scenes.json")
 
     if not prefix:
-        # Infer prefix from existing .wav/.json or parent folder
         wavs = sorted(package_dir.glob("*.wav"))
         if wavs:
             prefix = wavs[0].stem
@@ -211,7 +252,6 @@ def render_package(
     if res_render.returncode != 0:
         return {"status": "error", "stage": "render", "stderr": res_render.stderr.strip()}
 
-    # Pre-compress thumbnails to < 2 MB .jpg
     for png_thumb in sorted(package_dir.glob("*thumb*.png")):
         ensure_compressed_thumbnail(png_thumb)
 
@@ -222,6 +262,7 @@ def render_package(
 
     return {
         "status": "ok" if verification.get("all_valid") else "verification_failed",
+        "mode": "slides",
         "prefix": prefix,
         "package_dir": str(package_dir),
         "verification": verification,

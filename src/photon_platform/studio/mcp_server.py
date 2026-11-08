@@ -13,7 +13,6 @@ from typing import Any, Callable
 
 from .archive import (
     clean_scratch,
-    generate_systemd_mount_unit,
     scan_storage,
     sync_archive,
 )
@@ -73,13 +72,15 @@ def studio_verify(package_dir: str) -> dict[str, Any]:
 def studio_render(
     package_dir: str,
     prefix: str | None = None,
+    mode: str = "slides",
     tts: bool = False,
     purge_scratch: bool = True,
 ) -> dict[str, Any]:
-    """Render a package directory to 2560x1440 QHD + 1080x1920 Short, verify with ffprobe, and clean scratch."""
+    """Render a package directory (mode='slides' or 'motion') to 2560x1440 QHD + 1080x1920 Short, verify with ffprobe, and clean scratch."""
     return render_package(
         Path(package_dir),
         prefix=prefix,
+        mode=mode,
         tts=tts,
         purge_scratch=purge_scratch,
     )
@@ -133,11 +134,6 @@ def studio_archive_sync(
         direction=direction,
         dry_run=dry_run,
     )
-
-
-def studio_archive_mount_unit(write_unit: bool = False) -> dict[str, Any]:
-    """Generate (and optionally write) the systemd --user service unit mounting gdrive:PHOTON-MEDIA at /home/phi/MEDIA."""
-    return generate_systemd_mount_unit(write_unit=write_unit)
 
 
 TOOL_REGISTRY: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = {
@@ -199,12 +195,13 @@ TOOL_REGISTRY: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = {
     "studio_render": (
         studio_render,
         {
-            "description": "Render a package directory to 2560x1440 QHD + 1080x1920 Short, verify with ffprobe, and clean scratch.",
+            "description": "Render a package directory (mode='slides' or 'motion') to 2560x1440 QHD + 1080x1920 Short, verify with ffprobe, and clean scratch.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "package_dir": {"type": "string"},
                     "prefix": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["slides", "motion"], "default": "slides"},
                     "tts": {"type": "boolean", "default": False},
                     "purge_scratch": {"type": "boolean", "default": True},
                 },
