@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Any
-
 
 # Canonical YouTube resolutions and UI safe-zone boundaries
 WIDE_QHD_WIDTH = 2560
@@ -25,7 +24,7 @@ SAFE_ZONE_9X16_RIGHT_PX = 120     # Shorts right-hand action rail
 
 
 def find_chromium_binary() -> str:
-    from .engines.shorts import find_chrome
+    from .svg_utils import find_chrome
 
     return str(find_chrome())
 

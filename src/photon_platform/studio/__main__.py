@@ -1,11 +1,11 @@
-"""Zero-dependency CLI for PHOTON Studio (`studio speak|capture|render|verify|archive|broadcast`)."""
+"""Zero-dependency CLI for PHOTON Studio (`studio stage|speak|capture|motion|render|verify|archive|broadcast`)."""
 
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def _print_json(data: object) -> None:
@@ -31,22 +31,27 @@ def cli(argv: list[str] | None = None) -> int:
     p_render.add_argument("--tts", action="store_true")
     p_render.add_argument("--keep-scratch", action="store_true")
 
-    # 3. motion (Mode 2 standalone capture)
-    p_motion = sub.add_parser("motion", help="Mode 2: Capture deterministic 30.00 fps full-motion WebGL/Canvas/DOM movie")
-    p_motion.add_argument("url_or_html")
-    p_motion.add_argument("output_mp4", type=Path)
+    # 3. motion (Mode 2 package or standalone capture)
+    p_motion = sub.add_parser("motion", help="Mode 2: Render motion.json/camera_path.json package or standalone 3D WebGL HTML")
+    p_motion.add_argument("target", help="Package directory, motion.json/camera_path.json, or standalone HTML file")
+    p_motion.add_argument("output_mp4", nargs="?", type=Path, default=None, help="Output MP4 path (when target is an HTML file)")
+    p_motion.add_argument("--prefix", default=None)
     p_motion.add_argument("--width", type=int, default=2560)
     p_motion.add_argument("--height", type=int, default=1440)
     p_motion.add_argument("--duration", type=float, default=30.0)
     p_motion.add_argument("--fps", type=int, default=30)
     p_motion.add_argument("--warmup-frames", type=int, default=15)
+    p_motion.add_argument("--scale-factor", type=float, default=1.0)
     p_motion.add_argument("--audio-wav", type=Path, default=None)
     p_motion.add_argument("--no-ambient-drone", action="store_true")
     p_motion.add_argument("--thumb-png", type=Path, default=None)
     p_motion.add_argument("--thumb-sec", type=float, default=None)
+    p_motion.add_argument("--encode-only", action="store_true", help="Encode existing frames/ directory into MP4")
+    p_motion.add_argument("--test-frames", action="store_true", help="Capture diagnostic test frames without encoding MP4")
+    p_motion.add_argument("--clean", action="store_true", help="Clean existing frames/ before rendering")
 
     # 4. speak
-    p_speak = sub.add_parser("speak", help="Parse script.scr/script.txt or synthesize Argon III-C audio")
+    p_speak = sub.add_parser("speak", help="Parse script.scr/script.txt or synthesize multi-voice Gemini TTS audio")
     p_speak.add_argument("script_path", type=Path)
     p_speak.add_argument("-o", "--output-wav", type=Path, default=None)
     p_speak.add_argument("--prefix", default=None)
@@ -77,7 +82,7 @@ def cli(argv: list[str] | None = None) -> int:
     p_ascan = arch_sub.add_parser("scan", help="Report Tier 1 (Git), Tier 2 (Vault), and Tier 3 (Scratch) sizes")
     p_ascan.add_argument("root_dir", type=Path)
 
-    p_aclean = arch_sub.add_parser("clean", help="Remove Tier 3 build scratch (*_stage.html, slides_*/, frames_*/)")
+    p_aclean = arch_sub.add_parser("clean", help="Remove Tier 3 build scratch (stage.html, segments/, slides_*/, frames/)")
     p_aclean.add_argument("root_dir", type=Path)
     p_aclean.add_argument("--execute", action="store_true", help="Delete scratch (default is dry-run)")
 
@@ -87,12 +92,12 @@ def cli(argv: list[str] | None = None) -> int:
     p_async.add_argument("--direction", choices=["push", "pull"], default="push")
     p_async.add_argument("--dry-run", action="store_true")
 
-    p_async_all = arch_sub.add_parser("sync-all", help="Sync Tier 2 master media across all 4 projects (elements, etc, phyllotaxis, GOR-9)")
+    p_async_all = arch_sub.add_parser("sync-all", help="Sync Tier 2 master media across all projects (elements, etc, phyllotaxis, GOR-9)")
     p_async_all.add_argument("--direction", choices=["push", "pull"], default="push")
     p_async_all.add_argument("--dry-run", action="store_true")
 
     # 7. broadcast
-    p_bcast = sub.add_parser("broadcast", help="Coordinate shared YouTube API quota, schedules, and uploads")
+    p_bcast = sub.add_parser("broadcast", help="Coordinate shared YouTube API quota, schedules, auth, and uploads")
     bcast_sub = p_bcast.add_subparsers(dest="broadcast_cmd", required=True)
 
     bcast_sub.add_parser("quota", help="Show shared Pacific-Time YouTube API quota status")
@@ -102,6 +107,15 @@ def cli(argv: list[str] | None = None) -> int:
 
     p_brep = bcast_sub.add_parser("repair", help="Repair missing thumbnails/playlists on an uploaded package")
     p_brep.add_argument("package_dir", type=Path)
+
+    p_bpub = bcast_sub.add_parser("publish", help="Mark ONLY the specified uploaded packages as PUBLIC")
+    p_bpub.add_argument("package_dirs", nargs="+", type=Path)
+    p_bpub.add_argument("--channel", default=None, help="Channel handle (@geometor or @GOR-9-station)")
+    p_bpub.add_argument("--dry-run", action="store_true")
+
+    p_bauth = bcast_sub.add_parser("auth", help="Run OAuth 2.0 authorization flow for @geometor or @GOR-9-station")
+    p_bauth.add_argument("--channel", default="@geometor", help="Channel handle (@geometor or @GOR-9-station)")
+    p_bauth.add_argument("--port", type=int, default=8085)
 
     p_bsched = bcast_sub.add_parser("schedule", help="Assign staggered publishAt slots across package directories")
     p_bsched.add_argument("package_dirs", nargs="+", type=Path)
@@ -141,26 +155,37 @@ def cli(argv: list[str] | None = None) -> int:
         return 0 if res.get("status") == "ok" else 1
 
     if args.command == "motion":
-        from .motion import capture_motion_viewport
+        from .motion import capture_motion_viewport, render_motion_package
 
-        res = capture_motion_viewport(
-            url_or_html=args.url_or_html,
-            output_mp4=args.output_mp4,
-            width=args.width,
-            height=args.height,
-            duration_sec=args.duration,
-            fps=args.fps,
-            warmup_frames=args.warmup_frames,
-            audio_wav=args.audio_wav,
-            ambient_drone=not args.no_ambient_drone,
-            thumb_png=args.thumb_png,
-            thumb_sec=args.thumb_sec,
-        )
+        target_p = Path(args.target.replace("file://", ""))
+        if args.output_mp4 is not None and target_p.suffix.lower() in (".html", ".htm"):
+            res = capture_motion_viewport(
+                url_or_html=args.target,
+                output_mp4=args.output_mp4,
+                width=args.width,
+                height=args.height,
+                duration_sec=args.duration,
+                fps=args.fps,
+                warmup_frames=args.warmup_frames,
+                scale_factor=args.scale_factor,
+                audio_wav=args.audio_wav,
+                ambient_drone=not args.no_ambient_drone,
+                thumb_png=args.thumb_png,
+                thumb_sec=args.thumb_sec,
+            )
+        else:
+            res = render_motion_package(
+                target_p,
+                prefix=args.prefix,
+                encode_only=args.encode_only,
+                test_frames_only=args.test_frames,
+                clean=args.clean,
+            )
         _print_json(res)
         return 0 if res.get("ok") else 1
 
     if args.command == "speak":
-        from .engines.speak import synthesize_script
+        from .speak import synthesize_script
         from .stage import infer_package_prefix
 
         scr_p = Path(args.script_path).resolve()
@@ -205,7 +230,12 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "archive":
-        from .archive import clean_scratch, scan_storage, sync_all_projects, sync_archive
+        from .archive import (
+            clean_scratch,
+            scan_storage,
+            sync_all_projects,
+            sync_archive,
+        )
 
         if args.archive_cmd == "scan":
             _print_json(scan_storage(args.root_dir))
@@ -230,7 +260,14 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "broadcast":
-        from .broadcast import discover_all_packages, get_quota_status, repair_package, schedule_packages
+        from .broadcast import (
+            authorize_channel,
+            discover_all_packages,
+            get_quota_status,
+            publish_packages,
+            repair_package,
+            schedule_packages,
+        )
 
         if args.broadcast_cmd == "quota":
             _print_json(get_quota_status())
@@ -239,6 +276,10 @@ def cli(argv: list[str] | None = None) -> int:
             _print_json({k: v for k, v in summary.items() if k != "packages"})
         elif args.broadcast_cmd == "repair":
             _print_json(repair_package(args.package_dir))
+        elif args.broadcast_cmd == "publish":
+            _print_json(publish_packages(args.package_dirs, channel=args.channel, dry_run=args.dry_run))
+        elif args.broadcast_cmd == "auth":
+            _print_json(authorize_channel(channel=args.channel, port=args.port))
         elif args.broadcast_cmd == "schedule":
             _print_json(
                 schedule_packages(

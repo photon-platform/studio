@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import json
-from pathlib import Path
 import subprocess
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
-
 
 MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024  # 2 MiB YouTube API limit
 
@@ -45,14 +44,12 @@ def probe_media(mp4_path: Path) -> dict[str, Any]:
         "ffprobe",
         "-v",
         "error",
-        "-show_Format",
+        "-show_format",
         "-show_streams",
         "-of",
         "json",
         str(mp4_path),
     ]
-    # Note: ffprobe option is -show_format (lowercase)
-    cmd[3] = "-show_format"
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if res.returncode != 0:
         raise RuntimeError(f"ffprobe failed on {mp4_path}: {res.stderr.strip()}")
@@ -63,9 +60,9 @@ def verify_video_file(mp4_path: Path, variant: str = "wide_16x9") -> StreamRepor
     """Validate a video file against the PHOTON Studio YouTube master specification.
 
     - wide_16x9: Must be 2560x1440 (1440p QHD) to trigger YouTube's vp09 (VP9) hardware pipeline,
-      h264 High profile, yuv420p, 30fps CFR, bt709 color signaling, and 48kHz stereo AAC audio.
-    - short_9x16: Must be 1080x1920 (FHD Vertical), h264 High profile, yuv420p, 30fps CFR,
-      bt709 color signaling, and 48kHz stereo AAC audio.
+      h264 codec, yuv420p, 30fps CFR, and AAC audio.
+    - short_9x16: Must be 1080x1920 (FHD Vertical), h264 codec, yuv420p, 30fps CFR,
+      and AAC audio.
     """
     mp4_path = Path(mp4_path)
     report = StreamReport(path=str(mp4_path), exists=mp4_path.exists(), variant=variant)
@@ -135,8 +132,34 @@ def verify_video_file(mp4_path: Path, variant: str = "wide_16x9") -> StreamRepor
     return report
 
 
+def _resolve_pkg_file(package_dir: Path, raw_path: str | None) -> Path | None:
+    if not raw_path:
+        return None
+    p = Path(raw_path)
+    if p.exists():
+        return p.resolve()
+    cand = package_dir / p.name
+    if cand.exists():
+        return cand.resolve()
+    cand_rel = package_dir / p
+    if cand_rel.exists():
+        return cand_rel.resolve()
+    return None
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in paths:
+        rp = p.resolve()
+        if rp not in seen and rp.exists():
+            seen.add(rp)
+            out.append(rp)
+    return out
+
+
 def verify_package_dir(package_dir: Path) -> dict[str, Any]:
-    """Verify all video tracks and thumbnails in a package directory (or GOR-9 episode)."""
+    """Verify all video tracks, thumbnails, segment status, and frame tear status in a package directory."""
     package_dir = Path(package_dir).resolve()
     yt_json = package_dir / "youtube.json"
     if not yt_json.exists() and (package_dir / "youtube" / "youtube.json").exists():
@@ -150,11 +173,44 @@ def verify_package_dir(package_dir: Path) -> dict[str, Any]:
         "all_valid": True,
     }
 
-    # Discover tracks from youtube.json or directory globbing
-    wide_candidates = sorted(package_dir.glob("*_1080p.mp4")) + sorted(
-        package_dir.glob("gor9_ep*.mp4")
-    )
-    short_candidates = sorted(package_dir.glob("*_short.mp4"))
+    wide_raw: list[Path] = []
+    short_raw: list[Path] = []
+
+    if yt_json.exists():
+        try:
+            yt_data = json.loads(yt_json.read_text(encoding="utf-8"))
+            files_cfg = yt_data.get("files") or {}
+            w_p = _resolve_pkg_file(package_dir, files_cfg.get("wide_1080p_mp4") or yt_data.get("video_file"))
+            s_p = _resolve_pkg_file(package_dir, files_cfg.get("short_mp4"))
+            if w_p:
+                wide_raw.append(w_p)
+            if s_p:
+                short_raw.append(s_p)
+        except Exception:
+            pass
+
+    for spec_name in ("motion.json", "camera_path.json"):
+        spec_file = package_dir / spec_name
+        if spec_file.exists():
+            try:
+                s_data = json.loads(spec_file.read_text(encoding="utf-8"))
+                w_p = _resolve_pkg_file(package_dir, s_data.get("wide_mp4") or s_data.get("mp4_name"))
+                s_p = _resolve_pkg_file(package_dir, s_data.get("short_mp4"))
+                if w_p:
+                    wide_raw.append(w_p)
+                if s_p:
+                    short_raw.append(s_p)
+            except Exception:
+                pass
+
+    wide_raw.extend(sorted(package_dir.glob("*_1080p.mp4")))
+    wide_raw.extend(sorted(package_dir.glob("gor9_*.mp4")))
+    wide_raw.extend(sorted(package_dir.glob("phyllotaxis_*_1080p.mp4")))
+    short_raw.extend(sorted(package_dir.glob("*_short.mp4")))
+    short_raw.extend(sorted(package_dir.glob("phyllotaxis_*_short.mp4")))
+
+    wide_candidates = _dedupe_paths([p for p in wide_raw if not p.name.endswith("_short.mp4")])
+    short_candidates = _dedupe_paths(short_raw)
 
     if wide_candidates:
         rep = verify_video_file(wide_candidates[0], variant="wide_16x9")
@@ -173,14 +229,37 @@ def verify_package_dir(package_dir: Path) -> dict[str, Any]:
         results["error"] = "No master MP4 files found in package directory"
 
     # Check thumbnails
-    for thumb in sorted(package_dir.glob("*thumb*.png")) + sorted(
-        package_dir.glob("*thumb*.jpg")
-    ) + sorted((package_dir / "youtube").glob("*thumb*.*") if (package_dir / "youtube").exists() else []):
+    thumb_candidates = (
+        sorted(package_dir.glob("*thumb*.png"))
+        + sorted(package_dir.glob("*thumb*.jpg"))
+        + sorted((package_dir / "youtube").glob("*thumb*.*") if (package_dir / "youtube").exists() else [])
+    )
+    for thumb in _dedupe_paths(thumb_candidates):
         size_bytes = thumb.stat().st_size
         results["thumbnails"][thumb.name] = {
             "path": str(thumb),
             "size_kb": round(size_bytes / 1024, 1),
             "under_2mb_limit": size_bytes <= MAX_THUMBNAIL_BYTES,
         }
+
+    # Optional Mode 1 segment status & Mode 2 frame tear audit
+    if (package_dir / "segments").is_dir():
+        try:
+            from .stage import get_package_status
+
+            results["segments_status"] = get_package_status(package_dir)
+        except Exception as exc:
+            results["segments_status_error"] = str(exc)
+
+    if (package_dir / "frames").is_dir():
+        try:
+            from .motion import purge_torn_frames
+
+            torn = purge_torn_frames(package_dir / "frames", mode=package_dir.name, audit_only=True)
+            results["torn_frames_count"] = len(torn)
+            if torn:
+                results["torn_frame_indices"] = torn[:25]
+        except Exception as exc:
+            results["torn_frames_error"] = str(exc)
 
     return results

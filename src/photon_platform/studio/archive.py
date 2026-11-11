@@ -1,26 +1,26 @@
 """3-Tier Storage & Google Drive Archive Manager (No Symlinks).
 
 Tier 1 (Git-Tracked Source):
-  - script.scr, script.txt, *.svg, *.srt, *.vtt, youtube.json, youtube.txt
+  - script.scr, script.txt, motion.json, camera_path.json, *.svg, *.srt, *.vtt, youtube.json, STUDIO.md
 Tier 2 (Local Git-Ignored Master Media, backed up via rclone to gdrive:PHOTON-MEDIA):
-  - *_1080p.mp4 (2560x1440 QHD), *_short.mp4 (1080x1920), *.wav, *_thumb.png, *_thumb.jpg
+  - *_1080p.mp4, gor9_*.mp4 (2560x1440 QHD), *_short.mp4 (1080x1920), *.wav, *_thumb.png, *_thumb.jpg
 Tier 3 (Ephemeral Build Scratch — Purged after verification):
-  - *_stage.html, slides_16x9/, slides_9x16/, frames_*/, _raw_*.png
+  - stage.html, *_stage.html, segments/, slides_16x9/, slides_9x16/, frames/, frames_*/, test_frames/, _raw_*.png, clips_*.txt, *_concat.txt
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
-
 
 DEFAULT_RCLONE_REMOTE = "gdrive:PHOTON-MEDIA"
 
-TIER1_EXTENSIONS = {".scr", ".txt", ".json", ".srt", ".vtt", ".svg", ".md", ".py", ".rst"}
+TIER1_EXTENSIONS = {".scr", ".txt", ".json", ".srt", ".vtt", ".svg", ".md", ".py", ".rst", ".js"}
 TIER2_EXTENSIONS = {".mp4", ".wav", ".flac", ".m4a", ".mov", ".mkv"}
+SCRATCH_DIR_NAMES = {"segments", "frames", "test_frames"}
 SCRATCH_DIR_PREFIXES = ("slides_", "frames_", "_tmp_", "work_")
 
 PROJECT_ARCHIVE_MAP: dict[str, tuple[Path, str]] = {
@@ -28,7 +28,22 @@ PROJECT_ARCHIVE_MAP: dict[str, tuple[Path, str]] = {
     "etc": (Path("/home/phi/PROJECTS/geometor/etc/videos"), "geometor/etc/videos"),
     "phyllotaxis": (Path("/home/phi/PROJECTS/geometor/phyllotaxis/videos"), "geometor/phyllotaxis/videos"),
     "GOR-9": (Path("/home/phi/PROJECTS/phiarchitect/GOR-9/episodes"), "phiarchitect/GOR-9/episodes"),
+    "GOR-9-videos": (Path("/home/phi/PROJECTS/phiarchitect/GOR-9/videos"), "phiarchitect/GOR-9/videos"),
 }
+
+
+def _is_scratch_dir_name(dname: str) -> bool:
+    return dname in SCRATCH_DIR_NAMES or any(dname.startswith(pref) for pref in SCRATCH_DIR_PREFIXES)
+
+
+def _is_scratch_file_name(fname: str) -> bool:
+    return (
+        fname == "stage.html"
+        or fname.endswith("_stage.html")
+        or fname.startswith("_raw_")
+        or fname in ("clips_16x9.txt", "clips_9x16.txt")
+        or fname.endswith("_concat.txt")
+    )
 
 
 def classify_file(path: Path) -> str:
@@ -37,10 +52,12 @@ def classify_file(path: Path) -> str:
     suffix = path.suffix.lower()
 
     for parent in path.parents:
-        if any(parent.name.startswith(pref) for pref in SCRATCH_DIR_PREFIXES):
+        if parent.name == ".tts_cache":
+            return "tier2_master"
+        if _is_scratch_dir_name(parent.name):
             return "tier3_scratch"
 
-    if name.endswith("_stage.html") or name.startswith("_raw_"):
+    if _is_scratch_file_name(name):
         return "tier3_scratch"
 
     if suffix in TIER2_EXTENSIONS:
@@ -68,7 +85,13 @@ def scan_storage(root_dir: Path) -> dict[str, Any]:
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dpath = Path(dirpath)
         for dname in list(dirnames):
-            if any(dname.startswith(pref) for pref in SCRATCH_DIR_PREFIXES):
+            if dname == ".tts_cache":
+                cdir = dpath / dname
+                size = sum(f.stat().st_size for f in cdir.rglob("*") if f.is_file() and not f.is_symlink())
+                totals["tier2_master"] += size
+                counts["tier2_master"] += 1
+                dirnames.remove(dname)
+            elif _is_scratch_dir_name(dname):
                 sdir = dpath / dname
                 size = sum(f.stat().st_size for f in sdir.rglob("*") if f.is_file() and not f.is_symlink())
                 totals["tier3_scratch"] += size
@@ -97,7 +120,7 @@ def scan_storage(root_dir: Path) -> dict[str, Any]:
 
 
 def clean_scratch(root_dir: Path, dry_run: bool = True, require_mp4: bool = True) -> dict[str, Any]:
-    """Purge Tier 3 build scratch (`*_stage.html`, `slides_*/`, `frames_*/`)."""
+    """Purge Tier 3 build scratch (`stage.html`, `*_stage.html`, `segments/`, `slides_*/`, `frames/`, `frames_*/`)."""
     root_dir = Path(root_dir).resolve()
     removed: list[str] = []
     skipped: list[str] = []
@@ -108,7 +131,10 @@ def clean_scratch(root_dir: Path, dry_run: bool = True, require_mp4: bool = True
         has_mp4 = any(f.endswith(".mp4") for f in filenames)
 
         for dname in list(dirnames):
-            if any(dname.startswith(pref) for pref in SCRATCH_DIR_PREFIXES):
+            if dname == ".tts_cache":
+                dirnames.remove(dname)
+                continue
+            if _is_scratch_dir_name(dname):
                 sdir = dpath / dname
                 if require_mp4 and not has_mp4:
                     skipped.append(str(sdir))
@@ -121,7 +147,7 @@ def clean_scratch(root_dir: Path, dry_run: bool = True, require_mp4: bool = True
                 dirnames.remove(dname)
 
         for fname in filenames:
-            if fname.endswith("_stage.html") or fname.startswith("_raw_"):
+            if _is_scratch_file_name(fname):
                 fpath = dpath / fname
                 if require_mp4 and not has_mp4:
                     skipped.append(str(fpath))
@@ -174,6 +200,12 @@ def sync_archive(
         dst,
         "--include",
         "*.{mp4,wav,flac,png,jpg}",
+        "--exclude",
+        "segments/**",
+        "--exclude",
+        "frames/**",
+        "--exclude",
+        "test_frames/**",
         "--exclude",
         "slides_*/**",
         "--exclude",

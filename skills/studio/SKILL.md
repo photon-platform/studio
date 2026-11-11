@@ -5,75 +5,91 @@ description: Unified 3-Phase Media Studio workflow (Creative Scripting -> Produc
 
 # PHOTON Studio (`studio`)
 
-Unified three-phase media production workflow for GEOMETOR, PHOTON Platform, and phi ARCHITECT repositories.
+Unified three-phase media production workflow for GEOMETOR, PHOTON Platform, and phi ARCHITECT repositories, powered by `photon-platform/studio` (`~/.local/bin/studio` CLI and `~/.local/bin/studio-mcp` MCP server).
 
-## Core Architecture: General Workflow vs. Project Context
+## Core Architecture: Canonical Engine vs. Project Overlays
 
-**PHOTON Studio** separates **universal studio phases & rendering engines** from **project-specific conventions**:
+**PHOTON Studio** separates **universal studio phases & rendering engines** (`photon_platform.studio`) from **project-specific domain overlays**:
 
 1. **Always Read `<repo>/videos/STUDIO.md` First** (or `<repo>/episodes/STUDIO.md`):
-   - [`elements/videos/STUDIO.md`](file:///home/phi/PROJECTS/geometor/elements/videos/STUDIO.md) — 3-act Euclidean proposition structure (`enunciation`, `construction`, `demonstration`), symbolic SVG selectors (`/ A B /`, `( A B )`, `< A B C >`), automatic defining-point expansion, equality ticks, and geometric `[sfx:...]` cues.
-   - [`etc/videos/STUDIO.md`](file:///home/phi/PROJECTS/geometor/etc/videos/STUDIO.md) — 5-section triangle center structure (`primary`, `coordinates`, `central_lines`, `relations`, `invariance`), 5-SVG visual pipeline, and ETC `[sfx:...]` cues.
-   - [`GOR-9/episodes/STUDIO.md`](file:///home/phi/PROJECTS/phiarchitect/GOR-9/episodes/STUDIO.md) — Narrative episode & 3D tour structure, Mode 2 (`motion`) 30 fps WebGL/Blender capture, and private broadcast rules.
+   - [`elements/videos/STUDIO.md`](file:///home/phi/PROJECTS/geometor/elements/videos/STUDIO.md) — `@geometor` channel; Mode 1 (`stage`) 3-act Euclidean proposition structure (`enunciation`, `construction`, `demonstration`), symbolic SVG selectors (`/ A B /`, `( A B )`, `< A B C >`), automatic defining-point expansion, equality ticks, and geometric `[sfx:...]` cues.
+   - [`etc/videos/STUDIO.md`](file:///home/phi/PROJECTS/geometor/etc/videos/STUDIO.md) — `@geometor` channel; Mode 1 (`stage`) 5-section triangle center structure (`primary`, `coordinates`, `central_lines`, `relations`, `invariance`), 5-SVG visual pipeline, HTML subscript rendering (`X<sub>1</sub>`), and ETC `[sfx:...]` cues.
+   - [`phyllotaxis/videos/STUDIO.md`](file:///home/phi/PROJECTS/geometor/phyllotaxis/videos/STUDIO.md) — `@geometor` channel; Mode 2 (`motion`) 30.00 fps native `2560x1440` WebGL/Canvas animations (`unfolding`).
+   - [`GOR-9/videos/STUDIO.md`](file:///home/phi/PROJECTS/phiarchitect/GOR-9/videos/STUDIO.md) & [`GOR-9/episodes/STUDIO.md`](file:///home/phi/PROJECTS/phiarchitect/GOR-9/episodes/STUDIO.md) — `@GOR-9-station` channel (default `private` / `unlisted`, never auto-public); Mode 2 (`motion`) 30.00 fps WebGL spline tours (`camera_path.json`), console demos, Blender Cycles cold opens, and multi-character `[voice: ...]` episodes.
 2. **Strict No-Symlinks Storage Policy**:
    - **Never create symlinks to `/home/phi/MEDIA` or mount Google Drive as a FUSE filesystem.**
-   - All rendered `.mp4`, `.wav`, and thumbnail masters live directly inside the project's `videos/` (or `episodes/`) directory as real, git-ignored local files.
-   - Use `studio archive sync` (`push` / `pull`) to back up or restore git-ignored media files directly between `/home/phi/PROJECTS/<org>/<repo>/` and `gdrive:PHOTON-MEDIA/<org>/<repo>/`.
+   - All rendered `.mp4`, `.wav`, `.tts_cache/`, and thumbnail masters live directly inside the project's `videos/` (or `episodes/`) directory as real, git-ignored local files.
+   - Use `studio archive sync` (`push` / `pull`) to back up or restore git-ignored Tier 2 media files directly between `/home/phi/PROJECTS/<org>/<repo>/` and `gdrive:PHOTON-MEDIA/<org>/<repo>/`.
 
 ---
 
 ## The Three Studio Phases
 
-### Phase 1: Creative (`script.scr` & Visual-Audio Choreography)
+### Phase 1: Creative (`script.scr`, `motion.json` / `camera_path.json` & Multi-Voice Audio)
 
-Author the canonical `script.scr` as the **single source of truth** (compiled directly in memory by `photon_platform.studio.script_compiler` without needing `scenes.json` on disk):
-
-1. **Modular Section Boundaries (`=== <section_id> ===`)**:
-   - Break every script into named sections (e.g., `=== enunciation ===`, `=== construction ===`, `=== demonstration ===`) so individual sections or lines can be updated and re-synthesized using `.tts_cache/`.
-2. **1-to-1 Screen-to-Speech Exchange (`[screen: ...]`)**:
-   - Every visual step has its own `[screen: ...]` block and its own `say:` line, so its visual duration is measured directly from its synthesized audio subsegment.
-   - **Automatic Defining-Point Rule (`elements`)**: Stating a segment `/ A B /`, line `[ A B ]`, circle `( A B )`, or polygon `< A B C >` in `show:`, `active:`, or `equal:` automatically includes its defining points (`A, B`) and strikes the element.
-3. **Acoustic Vocabulary (`[bell:...]` & `[sfx:...]`)**:
-   - Pair visual highlights with project-specific `[sfx:...]` harmonic cues (`point`, `segment`, `line`, `circle`, `intersect`, `concur`, `equal`, `ratio`, `conjugate`, `invariant`, `qed`).
+1. **Mode 1 Structured Scripts (`script.scr`)**:
+   - Compiled directly in memory by `photon_platform.studio.script_compiler` without needing `scenes.json` on disk.
+   - Modular `=== <section_id> ===` boundaries (`enunciation`, `construction`, `demonstration`, `review`, `outro`) enable per-segment caching in `segments/<NN>_<section_id>/` and phrase-level caching in `.tts_cache/`.
+   - 1-to-1 `[screen: ...]` -> `say:` exchange synchronizes step duration directly from synthesized audio subsegments.
+2. **Multi-Character & Harmonic Audio (`studio speak`)**:
+   - Supports Argon III-C default narration plus inline multi-character casting directives (`[voice: Fenrir | style: authoritative]`, `[voice: Kore]`), harmonic bells (`[bell:intro]`, `[bell:qef]`), and procedural `[sfx:...]` cues:
+     ```bash
+     studio speak videos/book_i/01/script.scr
+     ```
+3. **Mode 2 Camera Choreography (`motion.json` / `camera_path.json`)**:
+   - Declarative monotonic cubic Hermite camera splines across 5 coordinate systems (`cylindrical`, `spherical`, `cartesian`, `booth_cylindrical`, `object_locked`) or custom `injected_js_file` hooks (`window.__studioStep`).
 
 ---
 
-### Phase 2: Production (Two Distinct Native `2560x1440` QHD Rendering Modes)
+### Phase 2: Production (Native `2560x1440` QHD + `1080x1920` Short Rendering)
 
-`photon_platform.studio.render` codifies two distinct production pipelines, both targeting true native **`2560x1440` QHD (`16:9`)** and **`1080x1920` (`9:16` Short)** at **`30.00 fps` CFR**:
+Both production modes target native **`2560x1440` QHD (`16:9`)** (triggering YouTube's `vp09` pipeline) and **`1080x1920` (`9:16` Short)** at **`30.00 fps` CFR**, encoded cleanly with **`-pix_fmt yuv420p -movflags +faststart`** and **zero artificial `-vf` filters** (no synthetic grain `noise=...`, no `-color_range tv`, no x264 AQ overrides; only `-vf vflip` when reading upside-down WebGL `gl.readPixels` raw RGBA buffers):
 
-1. **Mode 1: Slide Sequence (`mode="slides"` — `elements`, `etc`, 2D Console Plates)**:
-   - **Capture**: Vector HTML/SVG layouts (`1920x1080` CSS) are rasterized natively at **`2560x1440`** via Chromium `--force-device-scale-factor=1.3333333333` (`4/3`).
-   - **Encode**: Clean FFmpeg `-f concat` demuxer with per-slide audio durations from `<prefix>.json`:
-     `ffmpeg -y -f concat -safe 0 -i concat.txt -i <prefix>.wav -vf fps=30 -shortest <prefix>_1080p.mp4`
-2. **Mode 2: 30 FPS Full-Motion Animation (`mode="motion"` — `GOR-9` 3D Tours, Cold Opens, Episodes, `phyllotaxis`)**:
-   - **Capture**: Deterministic `dt = 1/30s` (`30.00 fps` exact) frame capture at native **`2560x1440`** on hardware GPU (`--use-gl=angle --use-angle=gl`). For WebGL (`Three.js`), pad window height (`--window-size=2560,1560`), disable `window.addEventListener('resize')`, and set `renderer.setSize(2560, 1440, false)`.
-   - **Encode**: Use clean, direct FFmpeg defaults without synthetic noise (`noise=alls=2`), `-color_range tv` crushing, or `yuv420p` chroma downsampling:
-     `ffmpeg -y -framerate 30 -i frames/frame_%04d.png -i <prefix>.wav <prefix>_1080p.mp4`
+1. **Mode 1: Interactive Stage & Per-Segment Renderer (`studio stage` / `studio render --mode slides`)**:
+   - Live browser preview & editor:
+     ```bash
+     studio stage videos/book_i/01
+     ```
+   - Headless CDP single-browser capture + per-segment incremental clip build + stream-copy assembly:
+     ```bash
+     studio stage videos/book_i/01 --render
+     studio stage videos/book_i/01 --section construction
+     studio render videos/book_i/01 --mode slides
+     ```
+2. **Mode 2: 30 FPS Full-Motion WebGL / Frame-Sequence Engine (`studio motion` / `studio render --mode motion`)**:
+   - Hardware-GPU (`--use-gl=angle --use-angle=gl`) deterministic virtual-clock capture directly from `motion.json` or `camera_path.json` (or `--encode-only` for pre-rendered Blender/compositor `frames/`):
+     ```bash
+     studio motion videos/drone_loop
+     studio motion videos/drone_loop --test-frames
+     studio motion episodes/ep01_box_that_hummed --encode-only
+     ```
 3. **Verify Outputs (`studio verify`)**:
-   - Validates `ffprobe` streams, resolution (`2560x1440` and `1080x1920`), duration parity, audio presence, and `< 2 MB` thumbnails.
+   - Validates `ffprobe` streams, resolution (`2560x1440` / `1080x1920`), `h264` + `yuv420p` + `aac`, `< 2 MB` thumbnails, Mode 1 `segments_status`, and Mode 2 `torn_frames_count`:
+     ```bash
+     studio verify videos/book_i/01
+     ```
 
 ---
 
-### Phase 3: Publishing (Direct Rclone Archive & YouTube Broadcast)
+### Phase 3: Publishing (`studio archive` & Multi-Channel `studio broadcast`)
 
-1. **Archive Git-Ignored Master Media (`studio archive`)**:
-   - Push finished git-ignored `.mp4`, `.wav`, and thumbnail files from the project folder to `gdrive:PHOTON-MEDIA`:
+1. **3-Tier Storage & Rclone Archive (`studio archive`)**:
+   - Inspect Tier 1 (Git), Tier 2 (Master Vault), and Tier 3 (Scratch) usage, clean verified build scratch (`stage.html`, `segments/`, `slides_*/`, `frames/`), and sync Tier 2 masters with Google Drive:
      ```bash
+     studio archive scan videos/
+     studio archive clean videos/ --execute
      studio archive sync videos/ geometor/elements/videos --direction push
+     studio archive sync-all --direction push --dry-run
      ```
-   - Restore git-ignored media files after cloning a repository on another machine:
+2. **Multi-Channel YouTube Broadcast & Guardrails (`studio broadcast`)**:
+   - Enforces strict channel-to-token verification (`channels.list?mine=true`) before uploading:
+     - `@geometor` (`elements`, `etc`, `phyllotaxis`) -> `~/.config/geometor/youtube_token.json`
+     - `@GOR-9-station` (`GOR-9`, defaults to `private` unless `--publish` / `studio broadcast publish` is explicitly invoked) -> `~/.config/geometor/youtube_token_gor9.json`
+   - Commands:
      ```bash
-     studio archive sync videos/ geometor/elements/videos --direction pull
-     ```
-2. **Audit & Broadcast to YouTube (`studio broadcast`)**:
-   - Check live status and quota:
-     ```bash
-     studio broadcast status --project <elements|etc>
      studio broadcast quota
-     ```
-   - Upload, replace (`--replace`), or sync missing metadata/thumbnails/playlists (`--sync-missing`):
-     ```bash
-     studio broadcast upload --book i --props 1
-     studio broadcast upload --collection c-00001-00019 --centers 1
+     studio broadcast status --project GOR-9
+     studio broadcast auth --channel @GOR-9-station
+     studio broadcast upload videos/mk4_demo --sync-missing
+     studio broadcast publish videos/mk4_demo --channel @GOR-9-station
      ```

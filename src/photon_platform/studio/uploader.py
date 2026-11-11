@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import socket
 import sys
@@ -48,6 +49,12 @@ socket.getaddrinfo = _resilient_getaddrinfo
 CONFIG_DIR = Path.home() / ".config" / "geometor"
 DEFAULT_CLIENT_SECRET = CONFIG_DIR / "youtube_client_secret.json"
 DEFAULT_TOKEN_PATH = CONFIG_DIR / "youtube_token.json"
+GOR9_TOKEN_PATH = CONFIG_DIR / "youtube_token_gor9.json"
+
+CHANNEL_TOKEN_MAP: dict[str, Path] = {
+    "@geometor": DEFAULT_TOKEN_PATH,
+    "@gor-9-station": GOR9_TOKEN_PATH,
+}
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -76,6 +83,90 @@ QUOTA_COSTS = {
 }
 
 _SESSION_QUOTA_EVENTS: list[dict] = []
+
+
+def normalize_channel_handle(handle: str | None) -> str:
+  raw = (handle or "").strip()
+  if not raw:
+    return "@geometor"
+  if not raw.startswith("@"):
+    raw = f"@{raw}"
+  if raw.lower() == "@gor-9-station":
+    return "@GOR-9-station"
+  if raw.lower() == "@geometor":
+    return "@geometor"
+  return raw
+
+
+def resolve_package_channel_and_token(
+    pkg_dir: Path | None = None,
+    explicit_token: Path | None = None,
+    explicit_channel: str | None = None,
+) -> tuple[str, Path]:
+  """Resolve `(expected_channel_handle, token_path)` from explicit args, `youtube.json`, or repository path."""
+  channel: str | None = explicit_channel
+  if not channel and pkg_dir is not None:
+    pdir = Path(pkg_dir).resolve()
+    for yt_cand in (pdir / "youtube.json", pdir / "youtube" / "youtube.json"):
+      if yt_cand.exists():
+        try:
+          d = json.loads(yt_cand.read_text(encoding="utf-8"))
+          channel = d.get("channel") or d.get("channel_handle")
+          if channel:
+            break
+        except Exception:
+          pass
+    if not channel:
+      channel = "@GOR-9-station" if "GOR-9" in pdir.parts else "@geometor"
+
+  norm_channel = normalize_channel_handle(channel)
+  if explicit_token is not None:
+    return norm_channel, Path(explicit_token)
+  token_path = CHANNEL_TOKEN_MAP.get(norm_channel.lower(), DEFAULT_TOKEN_PATH)
+  return norm_channel, token_path
+
+
+def verify_authenticated_channel_handle(access_token: str, expected_channel: str) -> dict:
+  """Verify via `channels.list?mine=true` that `access_token` belongs to `expected_channel`."""
+  norm_expected = normalize_channel_handle(expected_channel)
+  ch = get_authenticated_channel(access_token)
+  if not ch:
+    raise RuntimeError(f"Could not verify authenticated YouTube channel for expected {norm_expected}.")
+  snippet = ch.get("snippet") or {}
+  actual_custom = normalize_channel_handle(snippet.get("customUrl") or "")
+  if snippet.get("customUrl") and actual_custom.lower() != norm_expected.lower():
+    raise RuntimeError(
+        f"YouTube channel guardrail blocked upload: expected {norm_expected}, "
+        f"but OAuth token belongs to {actual_custom} ({snippet.get('title', 'Unknown')})."
+    )
+  return ch
+
+
+def free_port_8085(port: int = 8085) -> None:
+  """Terminate any stale OAuth callback listener holding `port` before binding."""
+  my_pid = os.getpid()
+  try:
+    res = subprocess.run(
+        ["fuser", f"{port}/tcp"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for tok in (res.stdout + " " + res.stderr).split():
+      if tok.isdigit():
+        pid = int(tok)
+        if pid != my_pid:
+          try:
+            os.kill(pid, signal.SIGTERM)
+          except Exception:
+            pass
+    time.sleep(0.2)
+  except Exception:
+    pass
+
+
+class _ReusableHTTPServer(HTTPServer):
+  allow_reuse_address = True
 
 
 def _pt_date_str() -> str:
@@ -169,14 +260,19 @@ def run_oauth_flow(
     client_secret_path: Path,
     token_path: Path,
     port: int = 8085,
+    expected_channel: str | None = None,
 ) -> dict:
-  """Runs local loopback OAuth 2.0 flow and saves refreshable token."""
+  """Runs resilient local loopback OAuth 2.0 flow (ignoring browser preconnects/favicons) and saves refreshable token."""
+  free_port_8085(port)
   cfg = _load_client_config(client_secret_path)
   client_id = cfg["client_id"]
   client_secret = cfg["client_secret"]
   auth_uri = cfg.get("auth_uri", "https://accounts.google.com/o/oauth2/v2/auth")
   token_uri = cfg.get("token_uri", "https://oauth2.googleapis.com/token")
   redirect_uri = f"http://127.0.0.1:{port}"
+  target_label = normalize_channel_handle(expected_channel) if expected_channel else (
+      "@GOR-9-station" if "gor9" in token_path.name.lower() else "@geometor"
+  )
 
   captured: dict[str, str] = {}
 
@@ -190,15 +286,19 @@ def run_oauth_flow(
         body = (
             "<html><body style='background:#0b0e15;color:#e8b85a;"
             "font-family:monospace;padding:40px;'>"
-            "<h2>GEOMETOR YouTube Authorization Complete</h2>"
-            "<p style='color:#f4f1ea;'>You can close this tab and return to the terminal.</p>"
+            f"<h2>PHOTON Studio ({target_label}) YouTube Authorization Complete</h2>"
+            "<p style='color:#f4f1ea;'>Token saved. You can close this tab and return to the terminal.</p>"
             "</body></html>"
         )
         self.send_response(200)
-      else:
-        captured["error"] = qs.get("error", ["unknown_error"])[0]
+      elif "error" in qs:
+        captured["error"] = qs["error"][0]
         body = f"<html><body>Authorization failed: {captured['error']}</body></html>"
         self.send_response(400)
+      else:
+        self.send_response(204)
+        self.end_headers()
+        return
       self.send_header("Content-Type", "text/html; charset=utf-8")
       self.end_headers()
       self.wfile.write(body.encode("utf-8"))
@@ -215,21 +315,42 @@ def run_oauth_flow(
       "prompt": "consent",
   }
   consent_url = f"{auth_uri}?{urllib.parse.urlencode(params)}"
-  print("\n======================================================================")
-  print("GEOMETOR YOUTUBE OAUTH 2.0 AUTHORIZATION")
-  print("======================================================================")
-  print("1. Opening browser to authorize https://www.youtube.com/@geometor ...")
-  print("   (When prompted, select your Google account and choose the @geometor channel)")
-  print(f"\n   URL: {consent_url}\n")
+  print("\n======================================================================", flush=True)
+  print(f"PHOTON STUDIO ({target_label}) YOUTUBE OAUTH 2.0 AUTHORIZATION", flush=True)
+  print("======================================================================", flush=True)
+  print(f"1. Opening browser to authorize https://www.youtube.com/{target_label} ...", flush=True)
+  print(f"   (Select your Google account and choose the {target_label} channel)", flush=True)
+  print(f"\n   URL: {consent_url}\n", flush=True)
 
-  server = HTTPServer(("127.0.0.1", port), _CallbackHandler)
+  server = _ReusableHTTPServer(("127.0.0.1", port), _CallbackHandler)
+  server.timeout = 1.0
   try:
-    webbrowser.open(consent_url)
+    env = os.environ.copy()
+    env.setdefault("DISPLAY", ":0")
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
+    subprocess.Popen(
+        ["xdg-open", consent_url],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
   except Exception:
-    pass
+    try:
+      webbrowser.open(consent_url)
+    except Exception:
+      pass
 
-  print(f"Waiting for OAuth callback on {redirect_uri} ...")
-  server.handle_request()
+  print(f"Waiting for OAuth callback on {redirect_uri} ...", flush=True)
+  t_start = time.monotonic()
+  while "code" not in captured and "error" not in captured:
+    if time.monotonic() - t_start > 7200:
+      server.server_close()
+      raise TimeoutError("Timed out after 7200s waiting for OAuth callback")
+    try:
+      server.handle_request()
+    except Exception:
+      continue
   server.server_close()
 
   if "error" in captured or "code" not in captured:
@@ -260,16 +381,20 @@ def run_oauth_flow(
   token_data["expires_at"] = int(time.time()) + int(token_data.get("expires_in", 3600)) - 60
 
   token_path.parent.mkdir(parents=True, exist_ok=True)
-  token_path.write_text(json.dumps(token_data, indent=2), encoding="utf-8")
+  token_path.write_text(json.dumps(token_data, indent=2) + "\n", encoding="utf-8")
   os.chmod(token_path, 0o600)
-  print(f"Saved OAuth token to: {token_path}")
+  print(f"Saved OAuth token to: {token_path}", flush=True)
 
-  channel = get_authenticated_channel(token_data["access_token"])
-  if channel:
-    snippet = channel.get("snippet", {})
+  if expected_channel:
+    ch = verify_authenticated_channel_handle(token_data["access_token"], expected_channel)
+  else:
+    ch = get_authenticated_channel(token_data["access_token"])
+  if ch:
+    snippet = ch.get("snippet", {})
     print(
         f"Connected Channel   : {snippet.get('title')} "
-        f"({snippet.get('customUrl', channel.get('id'))})"
+        f"({snippet.get('customUrl', ch.get('id'))})",
+        flush=True,
     )
   return token_data
 
@@ -960,6 +1085,7 @@ def _effective_privacy(
     key: str,
     privacy_override: str | None = None,
     publish_at: str | None = None,
+    default_channel: str | None = None,
 ) -> str:
   """Determine effective privacyStatus, inheriting 'public' if current or any historical version was published."""
   if publish_at:
@@ -976,7 +1102,9 @@ def _effective_privacy(
         h_entry.get("privacyStatus") == "public" or h_entry.get("published_at")
     ):
       return "public"
-  return meta.get("privacyStatus", "unlisted")
+  chan = str(meta.get("channel") or meta.get("channel_handle") or default_channel or "").lower()
+  fallback_priv = "private" if chan == "@gor-9-station" else "unlisted"
+  return meta.get("privacyStatus", fallback_priv)
 
 
 def _sync_playlist_and_history_for_variant(
@@ -1179,54 +1307,57 @@ def process_proposition_dir(
     print(f"[SKIP] No youtube.json found in {prop_dir}")
     return True
 
+  def _rel_or_abs(raw_f: str | None) -> Path | None:
+    if not raw_f:
+      return None
+    p = Path(raw_f)
+    if p.is_absolute():
+      return p
+    return (prop_dir / p).resolve()
+
   meta = json.loads(yt_json_path.read_text(encoding="utf-8"))
   short_code = meta.get("short_code", prop_dir.name)
   files = meta.get("files", {})
   category_id = str(meta.get("categoryId", "27"))
   tags = meta.get("tags", [])
   description = meta.get("description", "")
-  srt_path = Path(files["captions_srt"]) if files.get("captions_srt") else None
+  srt_path = _rel_or_abs(files.get("captions_srt"))
   has_srt = bool(srt_path and srt_path.exists())
   uploads = meta.setdefault("uploads", {})
   history = meta.setdefault("history", {})
+  inferred_chan, _ = resolve_package_channel_and_token(prop_dir)
 
   variants = []
-  if target in ("both", "1080p"):
+  wide_mp4 = _rel_or_abs(files.get("wide_1080p_mp4") or meta.get("video_file"))
+  short_mp4 = _rel_or_abs(files.get("short_mp4"))
+  if target in ("both", "1080p") and wide_mp4 is not None:
     variants.append({
         "key": "wide_1080p",
         "label": "16:9 1080p",
-        "title": meta.get("title_1080p", f"{short_code} • Euclid's Elements"),
-        "mp4": Path(files["wide_1080p_mp4"]),
-        "thumb": (
-            Path(files["thumbnail_16x9_png"])
-            if files.get("thumbnail_16x9_png")
-            else None
-        ),
+        "title": meta.get("title_1080p") or meta.get("title") or f"{short_code} • Euclid's Elements",
+        "mp4": wide_mp4,
+        "thumb": _rel_or_abs(files.get("thumbnail_16x9_png") or meta.get("thumbnail_file")),
         "playlist": playlist_1080p,
         "url_fmt": "https://youtu.be/{vid}",
     })
-  if target in ("both", "short"):
+  if (target == "short" or (target == "both" and short_mp4 is not None)) and short_mp4 is not None:
     variants.append({
         "key": "short",
         "label": "9:16 Short",
         "title": meta.get("title_short", f"{short_code} • Euclid's Elements"),
-        "mp4": Path(files["short_mp4"]),
-        "thumb": (
-            Path(files["thumbnail_9x16_png"])
-            if files.get("thumbnail_9x16_png")
-            else None
-        ),
+        "mp4": short_mp4,
+        "thumb": _rel_or_abs(files.get("thumbnail_9x16_png")),
         "playlist": playlist_short,
         "url_fmt": "https://youtube.com/shorts/{vid}",
     })
 
   print(f"\n======================================================================")
-  print(f"PROPOSITION {short_code} ({meta.get('g_id', '')}) — {prop_dir}")
+  print(f"PROPOSITION {short_code} ({meta.get('g_id', '')}) — {prop_dir} [{inferred_chan}]")
   print(f"======================================================================")
 
   for v in variants:
     key = v["key"]
-    privacy = _effective_privacy(meta, key, privacy_override, publish_at)
+    privacy = _effective_privacy(meta, key, privacy_override, publish_at, default_channel=inferred_chan)
     if privacy == "public":
       meta["privacyStatus"] = "public"
     existing = uploads.get(key, {})
@@ -1945,10 +2076,15 @@ def main(argv: list[str] | None = None) -> None:
       help=f"Path to OAuth 2.0 client_secret.json (default: {DEFAULT_CLIENT_SECRET}).",
   )
   parser.add_argument(
+      "--channel",
+      default=None,
+      help="Expected YouTube channel handle (@geometor or @GOR-9-station); auto-detected from package if omitted.",
+  )
+  parser.add_argument(
       "--token",
       type=Path,
-      default=DEFAULT_TOKEN_PATH,
-      help=f"Path to saved OAuth token JSON (default: {DEFAULT_TOKEN_PATH}).",
+      default=None,
+      help=f"Path to saved OAuth token JSON (auto-selected per channel; @geometor default: {DEFAULT_TOKEN_PATH}).",
   )
   parser.add_argument(
       "--target",
@@ -2056,13 +2192,15 @@ def main(argv: list[str] | None = None) -> None:
     return
 
   if args.auth:
-    run_oauth_flow(args.client_secret, args.token)
+    expected_chan, tok_p = resolve_package_channel_and_token(None, explicit_token=args.token, explicit_channel=args.channel)
+    run_oauth_flow(args.client_secret, tok_p, expected_channel=expected_chan)
     if not args.dirs and not args.props and not args.topics:
       return
 
   if args.whoami:
-    token = get_valid_access_token(args.client_secret, args.token)
-    ch = get_authenticated_channel(token)
+    expected_chan, tok_p = resolve_package_channel_and_token(None, explicit_token=args.token, explicit_channel=args.channel)
+    token = get_valid_access_token(args.client_secret, tok_p)
+    ch = verify_authenticated_channel_handle(token, expected_chan) if args.channel else get_authenticated_channel(token)
     if ch:
       s = ch.get("snippet", {})
       st = ch.get("statistics", {})
@@ -2090,11 +2228,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.print_help()
     sys.exit(1)
 
+  expected_chan, resolved_token = resolve_package_channel_and_token(
+      prop_dirs[0],
+      explicit_token=args.token,
+      explicit_channel=args.channel,
+  )
+
   if args.status:
     check_and_publish_propositions(
         prop_dirs=prop_dirs,
         client_secret_path=args.client_secret,
-        token_path=args.token,
+        token_path=resolved_token,
         target=args.target,
         book_rom=args.book,
         publish=args.publish,
@@ -2104,17 +2248,27 @@ def main(argv: list[str] | None = None) -> None:
     )
     return
 
-  access_token = (
-      None
-      if args.dry_run
-      else get_valid_access_token(args.client_secret, args.token)
-  )
+  access_token = None
+  if not args.dry_run:
+    access_token = get_valid_access_token(args.client_secret, resolved_token)
+    verify_authenticated_channel_handle(access_token, expected_chan)
+
+  first_yt = prop_dirs[0] / "youtube.json"
+  is_single_track_batch = expected_chan.lower() == "@gor-9-station"
+  if first_yt.exists():
+    try:
+      f_meta = json.loads(first_yt.read_text(encoding="utf-8"))
+      if not (f_meta.get("files") or {}).get("short_mp4"):
+        is_single_track_batch = True
+    except Exception:
+      pass
 
   pl_1080p = args.playlist_1080p
   pl_short = args.playlist_short
   if (
       not args.dry_run
       and not args.no_playlists
+      and not is_single_track_batch
       and not args.update_meta
       and access_token
       and (not pl_1080p or not pl_short)
@@ -2134,6 +2288,11 @@ def main(argv: list[str] | None = None) -> None:
     base_sched_dt = datetime.fromisoformat(args.schedule_start.replace("Z", "+00:00")).astimezone(timezone.utc)
 
   for idx, pdir in enumerate(prop_dirs):
+    pkg_chan, _ = resolve_package_channel_and_token(pdir, explicit_token=args.token, explicit_channel=args.channel)
+    if pkg_chan.lower() != expected_chan.lower():
+      raise RuntimeError(
+          f"Cannot mix channels in a single upload batch: {pdir} expects {pkg_chan}, batch started on {expected_chan}."
+      )
     item_publish_at = args.publish_at
     if base_sched_dt is not None:
       dt = base_sched_dt + timedelta(hours=idx * args.schedule_step_hours)
@@ -2161,7 +2320,7 @@ def main(argv: list[str] | None = None) -> None:
     check_and_publish_propositions(
         prop_dirs=prop_dirs,
         client_secret_path=args.client_secret,
-        token_path=args.token,
+        token_path=resolved_token,
         target=args.target,
         book_rom=args.book,
         publish=True,

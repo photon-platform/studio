@@ -20,15 +20,33 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 import xml.etree.ElementTree as ET
 
-from .engines.shorts import (
-    STEP_KIND_COLORS,
-    clean_caption_text,
-    prepare_euclid_dark_svg,
-)
 from .script_compiler import (
     load_scenes_or_compile_scr,
     resolve_script_source_for_variant,
 )
+from .svg_utils import (
+    STEP_KIND_COLORS,
+    clean_caption_text,
+    find_chrome,
+    prepare_euclid_dark_svg,
+)
+
+_SUBSCRIPT_X_RE = re.compile(r"\bX_(\d+|[a-z])\b")
+_SUBSCRIPT_SYM_RE = re.compile(r"\b([A-Za-z])_([abc]|[1-9])\b")
+
+
+def format_subscripts_html(html_or_text: str, *, escape_first: bool = False) -> str:
+    """Format mathematical subscripts (`X_1` -> `X<sub>1</sub>`, `M_a` -> `M<sub>a</sub>`) outside HTML tags."""
+    s = html.escape(html_or_text) if escape_first else str(html_or_text)
+
+    def _sub_chunk(chunk: str) -> str:
+        chunk = _SUBSCRIPT_X_RE.sub(r"X<sub>\1</sub>", chunk)
+        return _SUBSCRIPT_SYM_RE.sub(r"\1<sub>\2</sub>", chunk)
+
+    return "".join(
+        part if part.startswith("<") else _sub_chunk(part)
+        for part in re.split(r"(<[^>]+>)", s)
+    )
 
 
 def infer_package_prefix(package_dir: Path) -> str:
@@ -544,7 +562,7 @@ def _align_scenes_with_manifest(
             "svg_path": str(svg_p) if svg_p else "",
             "symbolic": sc.get("symbolic", ""),
             "raw_clause": sc.get("raw_clause", ""),
-            "clause_html": sc.get("clause_html", ""),
+            "clause_html": format_subscripts_html(sc["clause_html"]) if sc.get("clause_html") else "",
             "just_tag": sc.get("just_tag", "∵ PREREQUISITE"),
             "just_id": just_id,
             "just_title": sc.get("just_title", ""),
@@ -3317,14 +3335,24 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
       return ref;
     }
 
+    function formatSubscriptsHtml(raw, isHtml = false) {
+      const src = isHtml ? String(raw || '') : escapeHtml(raw || '');
+      return src.replace(/(<[^>]+>)|([^<]+)/g, (m, tag, txt) => {
+        if (tag) return tag;
+        return txt
+          .replace(/\bX_(\d+|[a-z])\b/g, 'X<sub>$1</sub>')
+          .replace(/\b([A-Za-z])_([abc]|[1-9])\b/g, '$1<sub>$2</sub>');
+      });
+    }
+
     function buildRightPanelHtml(slide) {
       const isEtc = STAGE.project_kind === 'etc';
       if (slide.is_intro) {
         return `
           <div class="intro-hero-wrap">
             <div class="intro-enunciation-card">
-              <div class="intro-enun-quote">“${escapeHtml(STAGE.enunciation)}”</div>
-              <div class="intro-enun-cite">— ${escapeHtml(STAGE.folio_display)}</div>
+              <div class="intro-enun-quote">“${formatSubscriptsHtml(STAGE.enunciation)}”</div>
+              <div class="intro-enun-cite">— ${formatSubscriptsHtml(STAGE.folio_display)}</div>
             </div>
           </div>
         `;
@@ -3343,7 +3371,7 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
               <div class="rr-left">
                 <span class="rr-status" style="color:${iconColor};">${icon}</span>
                 <span class="rr-num">${String(row.step_num).padStart(2, '0')}</span>
-                <span class="rr-sym">${escapeHtml(row.symbolic)}</span>
+                <span class="rr-sym">${formatSubscriptsHtml(row.symbolic)}</span>
               </div>
             </div>
           `;
@@ -3399,7 +3427,7 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
             </div>
             <div class="outro-next-banner">
               <span class="outro-next-label">${nextLabel}</span>
-              <span class="outro-next-val">${escapeHtml(STAGE.next_prop || 'Next')}</span>
+              <span class="outro-next-val">${formatSubscriptsHtml(STAGE.next_prop || 'Next')}</span>
             </div>
           </div>
         `;
@@ -3407,7 +3435,7 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
 
       const cleanRef = cleanJustificationRef(slide);
       const refHtml = cleanRef
-        ? `<span class="just-ref-pill">∵ ${escapeHtml(cleanRef)}</span>`
+        ? `<span class="just-ref-pill">∵ ${formatSubscriptsHtml(cleanRef)}</span>`
         : '';
 
       return `
@@ -3419,7 +3447,7 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
             ${refHtml}
           </div>
           <div class="step-clause-wrap">
-            <div class="step-clause">${slide.clause_html || escapeHtml(slide.symbolic || '')}</div>
+            <div class="step-clause">${slide.clause_html ? formatSubscriptsHtml(slide.clause_html, true) : formatSubscriptsHtml(slide.symbolic || '')}</div>
           </div>
         </div>
       `;
@@ -3451,7 +3479,7 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <div class="stage-grid"></div>
           <div class="${frameCls}">
             <div class="thumb-card">
-              <div class="canon-title">${escapeHtml(STAGE.short_code)}</div>
+              <div class="canon-title">${formatSubscriptsHtml(STAGE.short_code)}</div>
               <div class="svg-canvas-holder" id="svg-holder">${slideSvgMarkup}</div>
             </div>
           </div>
@@ -3492,8 +3520,8 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
               <header class="wide-header">
                 <div class="header-top">
                   <div class="header-left">
-                    <span class="header-canon-badge">${escapeHtml(STAGE.short_code)}</span>
-                    <span class="header-title-text">${escapeHtml(topBannerTitle)}</span>
+                    <span class="header-canon-badge">${formatSubscriptsHtml(STAGE.short_code)}</span>
+                    <span class="header-title-text">${formatSubscriptsHtml(topBannerTitle)}</span>
                   </div>
                   <span class="step-counter-pill">${escapeHtml(headerCounterLabel)}</span>
                 </div>
@@ -3519,8 +3547,8 @@ STAGE_HTML_TEMPLATE = r"""<!DOCTYPE html>
               <header class="short-header">
                 <div class="header-top">
                   <div class="header-left">
-                    <span class="header-canon-badge">${escapeHtml(STAGE.short_code)}</span>
-                    <span class="header-title-text">${escapeHtml(topBannerTitle)}</span>
+                    <span class="header-canon-badge">${formatSubscriptsHtml(STAGE.short_code)}</span>
+                    <span class="header-title-text">${formatSubscriptsHtml(topBannerTitle)}</span>
                   </div>
                   <span class="step-counter-pill">${escapeHtml(headerCounterLabel)}</span>
                 </div>
@@ -4657,7 +4685,7 @@ def serve_stage(
     """Start the Live Studio Stage Workstation HTTP server with live `script.scr` editing,
     TTS audio regeneration, 1440p + Short MP4 rendering, and multi-project navigation."""
     import time
-    from .engines.speak import synthesize_script
+    from .speak import synthesize_script
 
     target_path = Path(target_path).resolve()
     if any((target_path / name).exists() for name in ("script.scr", "script.txt", "scenes.json")):
@@ -4912,7 +4940,7 @@ def _ensure_stage_master_wav(package_dir: Path, stage_data: dict[str, Any]) -> P
     preserving a backup of the raw spoken track in `<prefix>_spoken.wav` for idempotent re-builds."""
     import shutil
     import wave
-    from .engines.speak import (
+    from .speak import (
         SAMPLE_RATE,
         load_profile,
         make_harmonic_bell_pcm,
@@ -5005,7 +5033,7 @@ def _ensure_segment_audio(
     import hashlib
     import os
     import wave
-    from .engines.speak import (
+    from .speak import (
         SAMPLE_RATE,
         SINGLE_PAUSE_RE,
         apply_pronunciations,
@@ -5166,7 +5194,7 @@ def _sync_master_wav_and_manifest_from_segments(
 ) -> tuple[Path, Path]:
     """Assemble `<prefix>.wav` and `<prefix>.json` by concatenating `segments/<NN>_<sec_id>/audio.wav` across all sections."""
     import wave
-    from .engines.speak import SAMPLE_RATE, load_profile
+    from .speak import SAMPLE_RATE, load_profile
 
     profile = load_profile()
     voice_id = profile.get("voice_id", "voice_xdhacg1pn1cq")
@@ -5496,6 +5524,8 @@ def _encode_segment_clip(concat_txt: Path, sec_wav: Path, out_mp4: Path) -> None
         "vfr",
         "-pix_fmt",
         "yuv420p",
+        "-movflags",
+        "+faststart",
         str(out_mp4),
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -5521,7 +5551,6 @@ def render_stage_package(
     import shutil
     import subprocess
     import time
-    from .engines.shorts import find_chrome
     from .render import ensure_compressed_thumbnail
 
     t0 = time.monotonic()
@@ -5808,6 +5837,8 @@ def render_stage_package(
             "-c:v",
             "copy",
             "-shortest",
+            "-movflags",
+            "+faststart",
             str(out_mp4),
         ]
         subprocess.run(cmd, check=True, capture_output=True, text=True)

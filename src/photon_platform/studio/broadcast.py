@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import fcntl
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Any
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .render import ensure_compressed_thumbnail
-from .verify import verify_package_dir
-
 
 PT_TZ = ZoneInfo("America/Los_Angeles")
 CONFIG_DIR = Path.home() / ".config" / "geometor"
@@ -127,7 +125,6 @@ def record_quota_call(
                     "events": [],
                 },
             )
-            # Migrate older schema keys if present from etc
             if "total_units" in day_entry and "used_units" not in day_entry:
                 day_entry["used_units"] = day_entry.get("total_units", 0)
 
@@ -180,8 +177,6 @@ def get_quota_status(
     remaining = max(0, daily_limit - used)
     usable_after_reserve = max(0, remaining - hero_reserve)
 
-    # 1 dual-format pair (16:9 + 9:16) without API captions = 2 * (1600 + 50 + 50) = 3400 units
-    # 1 single-track video (e.g. GOR-9) = 1700 units
     return {
         "ledger_path": str(GLOBAL_LEDGER_PATH),
         "pt_date": pt_day,
@@ -199,47 +194,44 @@ def get_quota_status(
     }
 
 
-def get_access_token(channel: str = "@geometor") -> str:
-    """Load and auto-refresh the OAuth 2.0 access token for the specified channel."""
-    token_path = CHANNEL_TOKENS.get(channel)
-    if not token_path or not token_path.exists():
-        raise FileNotFoundError(f"OAuth token file not found for {channel}: {token_path}")
+def _resolve_channel_token_path(channel: str) -> tuple[str, Path]:
+    from .uploader import normalize_channel_handle
 
-    token_data = json.loads(token_path.read_text(encoding="utf-8"))
-    client_id = token_data.get("client_id")
-    client_secret = token_data.get("client_secret")
-    refresh_token = token_data.get("refresh_token")
+    norm = normalize_channel_handle(channel)
+    token_path = CHANNEL_TOKENS.get(norm)
+    if token_path is None:
+        token_path = CONFIG_DIR / ("youtube_token_gor9.json" if norm.lower() == "@gor-9-station" else "youtube_token.json")
+    return norm, token_path
 
-    if (not client_id or not client_secret) and CLIENT_SECRET_PATH.exists():
-        raw_secret = json.loads(CLIENT_SECRET_PATH.read_text(encoding="utf-8"))
-        installed = raw_secret.get("installed") or raw_secret.get("web") or {}
-        client_id = client_id or installed.get("client_id")
-        client_secret = client_secret or installed.get("client_secret")
 
-    if not refresh_token:
-        return token_data["token"]
+def get_access_token(channel: str = "@geometor", verify_handle: bool = True) -> str:
+    """Load, auto-refresh, and optionally verify the OAuth 2.0 access token for `channel`."""
+    from .uploader import get_valid_access_token, verify_authenticated_channel_handle
 
-    payload = urllib.parse.urlencode(
-        {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }
-    ).encode("utf-8")
+    norm_channel, token_path = _resolve_channel_token_path(channel)
+    access_token = get_valid_access_token(CLIENT_SECRET_PATH, token_path)
+    if verify_handle:
+        verify_authenticated_channel_handle(access_token, norm_channel)
+    return access_token
 
-    req = urllib.request.Request(
-        "https://oauth2.googleapis.com/token",
-        data=payload,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
+
+def authorize_channel(channel: str = "@geometor", port: int = 8085) -> dict[str, Any]:
+    """Run resilient loopback OAuth 2.0 flow for `@geometor` or `@GOR-9-station`."""
+    from .uploader import run_oauth_flow
+
+    norm_channel, token_path = _resolve_channel_token_path(channel)
+    token_data = run_oauth_flow(
+        client_secret_path=CLIENT_SECRET_PATH,
+        token_path=token_path,
+        port=port,
+        expected_channel=norm_channel,
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        refreshed = json.loads(resp.read().decode("utf-8"))
-
-    token_data["token"] = refreshed["access_token"]
-    token_path.write_text(json.dumps(token_data, indent=2) + "\n", encoding="utf-8")
-    return token_data["token"]
+    return {
+        "status": "ok",
+        "channel": norm_channel,
+        "token_path": str(token_path),
+        "expires_at": token_data.get("expires_at"),
+    }
 
 
 def upload_thumbnail_curl(
@@ -310,11 +302,14 @@ def inspect_package(pkg_dir: Path, project: str) -> dict[str, Any]:
         except Exception:
             data = {}
 
-    # Handle GOR-9 single-track schema vs Elements/ETC dual-track schema
-    if "video_id" in data and "wide_1080p" not in data:
+    default_channel = "@GOR-9-station" if project == "GOR-9" or "GOR-9" in pkg_dir.parts else "@geometor"
+    channel = data.get("channel") or data.get("channel_handle") or default_channel
+
+    # Legacy flat single-track schema (`video_id` at top level)
+    if "video_id" in data and "uploads" not in data and "wide_1080p" not in data:
         vid = data.get("video_id")
         thumb_ok = bool(data.get("thumbnail_uploaded") or data.get("thumbnail_set"))
-        priv = data.get("privacy_status", "private")
+        priv = data.get("privacy_status") or data.get("privacyStatus") or "private"
         pub_at = data.get("publish_at") or data.get("publishAt")
         state = "pending_upload"
         if vid:
@@ -324,7 +319,7 @@ def inspect_package(pkg_dir: Path, project: str) -> dict[str, Any]:
             "package_id": pkg_dir.name,
             "package_dir": str(pkg_dir),
             "youtube_json": str(yt_json),
-            "channel": data.get("channel_handle", "@GOR-9-station"),
+            "channel": channel,
             "mode": "single_wide",
             "state": state,
             "publish_at": pub_at,
@@ -334,18 +329,61 @@ def inspect_package(pkg_dir: Path, project: str) -> dict[str, Any]:
         }
 
     uploads = data.get("uploads", data)
-    wide = uploads.get("wide_1080p", {})
-    short = uploads.get("short", {})
+    files_cfg = data.get("files") or {}
+    wide = uploads.get("wide_1080p", {}) if isinstance(uploads, dict) else {}
+    short = uploads.get("short", {}) if isinstance(uploads, dict) else {}
     w_id = wide.get("video_id")
     s_id = short.get("video_id")
     w_thumb = bool(wide.get("thumbnail_set") or wide.get("thumbnail_uploaded"))
     s_thumb = bool(short.get("thumbnail_set") or short.get("thumbnail_uploaded"))
     w_pl = bool(wide.get("playlist_item_id"))
     s_pl = bool(short.get("playlist_item_id"))
-    pub_at = wide.get("publishAt") or short.get("publishAt")
-    priv = wide.get("privacyStatus") or "unscheduled"
+    pub_at = wide.get("publishAt") or short.get("publishAt") or data.get("publishAt")
+    priv = wide.get("privacyStatus") or data.get("privacyStatus") or "unscheduled"
 
-    has_mp4 = any(pkg_dir.glob("*_1080p.mp4")) and any(pkg_dir.glob("*_short.mp4"))
+    has_wide_mp4 = bool(
+        any(pkg_dir.glob("*_1080p.mp4"))
+        or any(pkg_dir.glob("gor9_*.mp4"))
+        or (files_cfg.get("wide_1080p_mp4") and Path(files_cfg["wide_1080p_mp4"]).exists())
+    )
+    has_short_mp4 = bool(
+        any(pkg_dir.glob("*_short.mp4"))
+        or (files_cfg.get("short_mp4") and Path(files_cfg["short_mp4"]).exists())
+    )
+
+    # Single-track 16:9 package (e.g., GOR-9 videos/mk4_demo, drone_loop, satellite_orbit)
+    is_single_wide = (
+        not s_id
+        and "short_mp4" not in files_cfg
+        and not has_short_mp4
+        and (project == "GOR-9" or "GOR-9" in pkg_dir.parts or bool(w_id) or has_wide_mp4)
+    )
+    if is_single_wide:
+        require_pl = bool(wide.get("playlist_id"))
+        needs_repair = bool(w_id and (not w_thumb or (require_pl and not w_pl)))
+        if w_id and not needs_repair:
+            state = "complete_scheduled" if (priv == "private" and pub_at) else f"complete_{priv}"
+        elif needs_repair:
+            state = "incomplete_repair_needed"
+        elif has_wide_mp4:
+            state = "pending_upload"
+        else:
+            state = "unrendered"
+        return {
+            "project": project,
+            "package_id": data.get("short_code") or data.get("prop_id") or pkg_dir.name,
+            "package_dir": str(pkg_dir),
+            "youtube_json": str(yt_json) if yt_json.exists() else None,
+            "channel": channel,
+            "mode": "single_wide",
+            "state": state,
+            "publish_at": pub_at,
+            "wide_video_id": w_id,
+            "short_video_id": None,
+            "needs_repair": needs_repair,
+        }
+
+    has_mp4 = has_wide_mp4 and has_short_mp4
     needs_repair = False
     if (w_id and (not w_thumb or not w_pl)) or (s_id and (not s_thumb or not s_pl)) or (bool(w_id) != bool(s_id)):
         needs_repair = True
@@ -364,7 +402,7 @@ def inspect_package(pkg_dir: Path, project: str) -> dict[str, Any]:
         "package_id": data.get("short_code") or data.get("prop_id") or pkg_dir.name,
         "package_dir": str(pkg_dir),
         "youtube_json": str(yt_json) if yt_json.exists() else None,
-        "channel": data.get("channel", "@geometor"),
+        "channel": channel,
         "mode": "dual",
         "state": state,
         "publish_at": pub_at,
@@ -398,12 +436,24 @@ def discover_all_packages(project_filter: str | None = None) -> dict[str, Any]:
                     if tdir.is_dir():
                         packages.append(inspect_package(tdir, "etc"))
 
+    if project_filter in (None, "phyllotaxis"):
+        phyl_vids = PROJECT_ROOTS["phyllotaxis"] / "videos"
+        if phyl_vids.exists():
+            for pdir in sorted(phyl_vids.iterdir()):
+                if pdir.is_dir() and any((pdir / fn).exists() for fn in ("youtube.json", "motion.json", "script.scr")):
+                    packages.append(inspect_package(pdir, "phyllotaxis"))
+
     if project_filter in (None, "GOR-9"):
         gor_eps = PROJECT_ROOTS["GOR-9"] / "episodes"
         if gor_eps.exists():
             for ep_dir in sorted(gor_eps.iterdir()):
-                if ep_dir.is_dir() and (ep_dir / "youtube" / "youtube.json").exists():
+                if ep_dir.is_dir() and ((ep_dir / "youtube" / "youtube.json").exists() or (ep_dir / "youtube.json").exists()):
                     packages.append(inspect_package(ep_dir, "GOR-9"))
+        gor_vids = PROJECT_ROOTS["GOR-9"] / "videos"
+        if gor_vids.exists():
+            for vdir in sorted(gor_vids.iterdir()):
+                if vdir.is_dir() and any((vdir / fn).exists() for fn in ("youtube.json", "motion.json", "camera_path.json")):
+                    packages.append(inspect_package(vdir, "GOR-9"))
 
     by_state: dict[str, int] = {}
     by_project: dict[str, dict[str, int]] = {}
@@ -476,6 +526,127 @@ def repair_package(package_dir: Path) -> dict[str, Any]:
         }
 
     return {"status": "noop", "message": "No youtube.json found to repair"}
+
+
+def publish_packages(
+    package_dirs: list[Path],
+    channel: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Set `privacyStatus='public'` ONLY for the specified video package directories."""
+    from .uploader import resolve_package_channel_and_token
+
+    if not package_dirs:
+        return {"status": "noop", "published": [], "message": "No package directories provided."}
+
+    pkg_paths = [Path(p).resolve() for p in package_dirs]
+    norm_channel, _token_path = resolve_package_channel_and_token(pkg_paths[0], explicit_channel=channel)
+
+    video_ids: list[str] = []
+    yt_files: list[Path] = []
+    for pkg_path in pkg_paths:
+        pkg_chan, _ = resolve_package_channel_and_token(pkg_path, explicit_channel=channel)
+        if pkg_chan.lower() != norm_channel.lower():
+            raise RuntimeError(
+                f"Cannot mix channels in a single publish batch: {pkg_path} uses {pkg_chan}, expected {norm_channel}."
+            )
+        yt_file = pkg_path / "youtube.json"
+        if not yt_file.exists() and (pkg_path / "youtube" / "youtube.json").exists():
+            yt_file = pkg_path / "youtube" / "youtube.json"
+        if not yt_file.exists():
+            continue
+        yt_files.append(yt_file)
+        d = json.loads(yt_file.read_text(encoding="utf-8"))
+        if d.get("video_id"):
+            vid = d["video_id"]
+            if vid not in video_ids:
+                video_ids.append(vid)
+        for up in (d.get("uploads") or {}).values():
+            if isinstance(up, dict) and up.get("video_id"):
+                vid = up["video_id"]
+                if vid not in video_ids:
+                    video_ids.append(vid)
+
+    if not video_ids:
+        return {"status": "noop", "channel": norm_channel, "published": [], "message": "No uploaded video IDs found."}
+
+    if dry_run:
+        return {
+            "status": "dry_run",
+            "channel": norm_channel,
+            "video_ids": video_ids,
+            "packages": [str(p) for p in pkg_paths],
+        }
+
+    access_token = get_access_token(channel=norm_channel, verify_handle=True)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; charset=UTF-8",
+    }
+
+    project_name = "GOR-9" if norm_channel.lower() == "@gor-9-station" else "geometor"
+    ids_param = ",".join(video_ids)
+    v_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,status&id={urllib.parse.quote(ids_param)}"
+    v_req = urllib.request.Request(v_url, headers=headers, method="GET")
+    with urllib.request.urlopen(v_req, timeout=30) as resp:
+        v_data = json.loads(resp.read().decode("utf-8"))
+    record_quota_call("videos.list", project=project_name, channel=norm_channel, package_id=pkg_paths[0].name)
+
+    published: list[dict[str, str]] = []
+    for v_item in v_data.get("items", []):
+        vid = v_item["id"]
+        snippet = v_item.get("snippet", {})
+        status_obj = v_item.get("status", {})
+        old_priv = status_obj.get("privacyStatus", "unknown")
+        title = snippet.get("title", vid)
+
+        if old_priv == "public":
+            published.append({"video_id": vid, "title": title, "previous_privacy": "public", "status": "already_public"})
+            continue
+
+        update_payload: dict[str, Any] = {
+            "id": vid,
+            "snippet": {
+                "title": title,
+                "description": snippet.get("description", ""),
+                "categoryId": str(snippet.get("categoryId", "27")),
+                "defaultLanguage": snippet.get("defaultLanguage", "en"),
+                "defaultAudioLanguage": snippet.get("defaultAudioLanguage", "en"),
+            },
+            "status": {
+                "privacyStatus": "public",
+                "selfDeclaredMadeForKids": False,
+            },
+        }
+        if snippet.get("tags"):
+            update_payload["snippet"]["tags"] = snippet["tags"]
+
+        put_req = urllib.request.Request(
+            "https://www.googleapis.com/youtube/v3/videos?part=snippet,status",
+            data=json.dumps(update_payload).encode("utf-8"),
+            headers=headers,
+            method="PUT",
+        )
+        with urllib.request.urlopen(put_req, timeout=30) as resp:
+            resp.read()
+        record_quota_call("videos.update", project=project_name, channel=norm_channel, package_id=vid)
+        published.append({"video_id": vid, "title": title, "previous_privacy": old_priv, "status": "published"})
+
+    for yt_file in yt_files:
+        d = json.loads(yt_file.read_text(encoding="utf-8"))
+        d["privacyStatus"] = "public"
+        if "privacy_status" in d:
+            d["privacy_status"] = "public"
+        for up in (d.get("uploads") or {}).values():
+            if isinstance(up, dict):
+                up["privacyStatus"] = "public"
+        yt_file.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+
+    return {
+        "status": "ok",
+        "channel": norm_channel,
+        "published": published,
+    }
 
 
 def schedule_packages(
