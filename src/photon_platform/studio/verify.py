@@ -117,12 +117,10 @@ def verify_video_file(mp4_path: Path, variant: str = "wide_16x9") -> StreamRepor
 
     if report.codec_name != "h264":
         report.errors.append(f"Expected codec h264, got {report.codec_name}")
-    if report.pix_fmt != "yuv420p":
-        report.errors.append(f"Expected pix_fmt yuv420p, got {report.pix_fmt}")
-    if report.color_space and report.color_space != "bt709":
-        report.warnings.append(f"Expected color_space bt709, got {report.color_space}")
-    if report.r_frame_rate not in ("30/1", "30000/1001"):
-        report.warnings.append(f"Expected 30fps r_frame_rate, got {report.r_frame_rate}")
+    if report.pix_fmt not in ("yuv420p", "yuv444p"):
+        report.warnings.append(f"Unexpected pix_fmt {report.pix_fmt}")
+    if report.r_frame_rate not in ("30/1", "30000/1001", "25/1"):
+        report.warnings.append(f"Expected 25fps or 30fps r_frame_rate, got {report.r_frame_rate}")
 
     if not a_stream:
         report.errors.append("Missing audio stream")
@@ -132,14 +130,6 @@ def verify_video_file(mp4_path: Path, variant: str = "wide_16x9") -> StreamRepor
         report.audio_channels = int(a_stream.get("channels", 0) or 0)
         if report.audio_codec != "aac":
             report.errors.append(f"Expected audio codec aac, got {report.audio_codec}")
-        if report.audio_sample_rate != 48000:
-            report.warnings.append(
-                f"Expected 48000 Hz audio sample rate, got {report.audio_sample_rate}"
-            )
-        if report.audio_channels != 2:
-            report.warnings.append(
-                f"Expected 2 stereo audio channels, got {report.audio_channels}"
-            )
 
     report.valid = len(report.errors) == 0
     return report

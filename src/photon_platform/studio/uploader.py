@@ -1277,7 +1277,8 @@ def process_proposition_dir(
         print(f"    {action:9s} : {existing_vid} ({existing.get('url')})")
       continue
 
-    access_token = get_valid_access_token()
+    if not access_token:
+      access_token = get_valid_access_token()
     assert access_token is not None
 
     if update_meta_only:
@@ -1417,7 +1418,8 @@ def process_proposition_dir(
 
     # Immediately complete all meta artifacts (thumbnail, captions, playlist swap, unlisting superseded takes)
     # and HALT if any step fails so we never move to the next video with an incomplete upload.
-    access_token = get_valid_access_token()
+    if not access_token:
+      access_token = get_valid_access_token()
     assert access_token is not None
     try:
       _ensure_variant_complete(

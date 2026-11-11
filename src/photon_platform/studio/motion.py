@@ -297,20 +297,14 @@ def build_motion_ffmpeg_cmd(
     crf: int = 16,
     preset: str = "slow",
 ) -> list[str]:
-    """Construct the Mode 2 (`motion`) FFmpeg encoding command with SIMD vflip, dark-scene AQ, and temporal dither."""
-    is_qhd = width >= 2560 or height >= 1440
-    h264_level = "5.1" if is_qhd else "4.2"
-    maxrate = "24M" if is_qhd else "12M"
-    bufsize = "48M" if is_qhd else "24M"
-    gop = fps * 2
-
+    """Construct the clean Mode 2 (`motion`) FFmpeg encoding command."""
     cmd = ["/usr/bin/ffmpeg", "-y"]
     if input_format in ("rawvideo", "rawvideo_vflip"):
         cmd.extend([
             "-f", "rawvideo",
             "-pix_fmt", "rgba",
             "-s", f"{width}x{height}",
-            "-r", str(fps),
+            "-framerate", str(fps),
             "-i", "pipe:0",
         ])
     else:
@@ -321,46 +315,15 @@ def build_motion_ffmpeg_cmd(
         ])
 
     if audio_wav and audio_wav.exists():
-        cmd.extend(["-i", str(audio_wav)])
+        cmd.extend(["-i", str(audio_wav), "-shortest"])
 
     if duration_sec is not None:
         cmd.extend(["-t", f"{duration_sec:.3f}"])
 
-    vflip_prefix = "vflip," if input_format == "rawvideo_vflip" else ""
-    vf_chain = f"{vflip_prefix}setsar=1:1,noise=alls=2:allf=t,format=yuv420p"
-    cmd.extend([
-        "-vf", vf_chain,
-        "-vsync", "cfr",
-        "-r", str(fps),
-        "-c:v", "libx264",
-        "-preset", preset,
-        "-profile:v", "high",
-        "-level:v", h264_level,
-        "-crf", str(crf),
-        "-maxrate", maxrate,
-        "-bufsize", bufsize,
-        "-g", str(gop),
-        "-keyint_min", str(gop),
-        "-sc_threshold", "0",
-        "-bf", "2",
-        "-flags", "+cgop",
-        "-x264-params", "aq-mode=3:aq-strength=0.8",
-        "-colorspace", "bt709",
-        "-color_primaries", "bt709",
-        "-color_trc", "bt709",
-        "-color_range", "tv",
-    ])
+    if input_format == "rawvideo_vflip":
+        cmd.extend(["-vf", "vflip"])
 
-    if audio_wav and audio_wav.exists():
-        cmd.extend([
-            "-c:a", "aac",
-            "-ar", "48000",
-            "-ac", "2",
-            "-b:a", "192k",
-            "-shortest",
-        ])
-
-    cmd.extend(["-movflags", "+faststart", str(output_mp4)])
+    cmd.append(str(output_mp4))
     return cmd
 
 

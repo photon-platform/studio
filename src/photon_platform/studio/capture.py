@@ -25,11 +25,9 @@ SAFE_ZONE_9X16_RIGHT_PX = 120     # Shorts right-hand action rail
 
 
 def find_chromium_binary() -> str:
-    for candidate in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
-        found = shutil.which(candidate)
-        if found:
-            return found
-    raise FileNotFoundError("No Chromium/Chrome binary found on PATH")
+    from .engines.shorts import find_chrome
+
+    return str(find_chrome())
 
 
 def capture_html_viewport(
@@ -40,6 +38,8 @@ def capture_html_viewport(
     wait_ms: int = 1500,
 ) -> dict[str, Any]:
     """Capture an HTML file or URL in an isolated ephemeral Chromium profile and crop to exact WxH."""
+    import os
+
     chrome_bin = find_chromium_binary()
     output_png = Path(output_png).resolve()
     output_png.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +51,11 @@ def capture_html_viewport(
     with tempfile.TemporaryDirectory(prefix="photon_studio_chrome_") as tmp_dir:
         tmp_root = Path(tmp_dir)
         raw_png = tmp_root / "_raw_capture.png"
+        env = os.environ.copy()
+        env["XDG_CONFIG_HOME"] = str(tmp_root / "config")
+        env["XDG_CACHE_HOME"] = str(tmp_root / "cache")
+        env["HOME"] = str(tmp_root / "home")
+        Path(env["HOME"]).mkdir(parents=True, exist_ok=True)
         cmd = [
             chrome_bin,
             "--headless=new",
@@ -70,7 +75,7 @@ def capture_html_viewport(
             f"--screenshot={raw_png}",
             target_url,
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
         if res.returncode != 0 or not raw_png.exists():
             return {
                 "status": "error",

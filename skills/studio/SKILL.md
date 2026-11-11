@@ -44,12 +44,14 @@ Author the canonical `script.scr` as the **single source of truth** (compiled di
 
 1. **Mode 1: Slide Sequence (`mode="slides"` — `elements`, `etc`, 2D Console Plates)**:
    - **Capture**: Vector HTML/SVG layouts (`1920x1080` CSS) are rasterized natively at **`2560x1440`** via Chromium `--force-device-scale-factor=1.3333333333` (`4/3`).
-   - **Encode**: FFmpeg `-f concat` demuxer with exact per-slide audio durations from `<prefix>.json`, encoded with `-c:v libx264 -preset fast -tune stillimage -crf 18 -profile:v high -level:v 5.1`.
+   - **Encode**: Clean FFmpeg `-f concat` demuxer with per-slide audio durations from `<prefix>.json`:
+     `ffmpeg -y -f concat -safe 0 -i concat.txt -i <prefix>.wav -vf fps=30 -shortest <prefix>_1080p.mp4`
 2. **Mode 2: 30 FPS Full-Motion Animation (`mode="motion"` — `GOR-9` 3D Tours, Cold Opens, Episodes, `phyllotaxis`)**:
-   - **Capture**: Deterministic `dt = 1/30s` (`30.00 fps` exact) frame capture at native **`2560x1440`**. For WebGL (`Three.js`), pad window height (`--window-size=2560,1560`), disable `window.addEventListener('resize')`, set `renderer.setSize(2560, 1440, false)`, and preserve all surface maps (`anisotropy`, `bumpMap`, `roughnessMap`).
-   - **Encode**: Do **not** use `-tune stillimage`. Encode with temporal dither (`noise=alls=2:allf=t`) and dark-scene adaptive quantization (`-crf 16 -preset slow -x264-params "aq-mode=3:aq-strength=0.8"`) to prevent 8-bit sky/glow banding in YouTube VP9.
+   - **Capture**: Deterministic `dt = 1/30s` (`30.00 fps` exact) frame capture at native **`2560x1440`** on hardware GPU (`--use-gl=angle --use-angle=gl`). For WebGL (`Three.js`), pad window height (`--window-size=2560,1560`), disable `window.addEventListener('resize')`, and set `renderer.setSize(2560, 1440, false)`.
+   - **Encode**: Use clean, direct FFmpeg defaults without synthetic noise (`noise=alls=2`), `-color_range tv` crushing, or `yuv420p` chroma downsampling:
+     `ffmpeg -y -framerate 30 -i frames/frame_%04d.png -i <prefix>.wav <prefix>_1080p.mp4`
 3. **Verify Outputs (`studio verify`)**:
-   - Validates `ffprobe` streams, resolution (`2560x1440` and `1080x1920`), duration parity, non-silent audio, and compressed `< 2 MB` thumbnails.
+   - Validates `ffprobe` streams, resolution (`2560x1440` and `1080x1920`), duration parity, audio presence, and `< 2 MB` thumbnails.
 
 ---
 

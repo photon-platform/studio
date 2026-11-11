@@ -212,14 +212,14 @@ def _split_top_level_commas(val: str) -> list[str]:
 
 def _highlight_euclid_clause_line(line_str: str) -> str:
     """Convert a symbolic Euclid clause line into syntax-highlighted HTML."""
-    # Tokenize function calls, geometric tokens (`/ A B /`, `( A B )`, `< A B C >`, single capital letters), and `=`
     pattern = re.compile(
         r"(?P<fn>\b[a-z_]+)(?=\()|"
         r"(?P<geom>/\s*[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)+\s*/|"
         r"\(\s*[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)+\s*\)|"
         r"<\s*[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)+\s*>|"
         r"\b[A-Z]\b)|"
-        r"(?P<eq>=)"
+        r"(?P<eq>=)|"
+        r"(?P<op>→|∩|∴)"
     )
     pos = 0
     out: list[str] = []
@@ -232,6 +232,8 @@ def _highlight_euclid_clause_line(line_str: str) -> str:
             out.append(f'<span class="g-tok">{html.escape(m.group("geom"))}</span>')
         elif m.group("eq"):
             out.append('<span class="eq-tok">=</span>')
+        elif m.group("op"):
+            out.append(f'<span class="op-tok">{html.escape(m.group("op"))}</span>')
         pos = m.end()
     if pos < len(line_str):
         out.append(html.escape(line_str[pos:]))
@@ -363,8 +365,19 @@ def _format_etc_clause_html(
     return ""
 
 
-def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]]:
-    """Compile a `.scr` (or unified `.txt`) script directly into the in-memory `scenes` list."""
+def compile_scr_text(
+    script_text: str,
+    package_dir: Path,
+    variant: str = "16x9",
+) -> list[dict[str, Any]]:
+    """Compile a `.scr` (or unified `.txt`) script directly into the in-memory `scenes` list.
+
+    Supports form-factor customization via `variant` ("16x9" or "9x16"):
+      - `[screen: ... | only: wide]` or `[screen: ... | only: short]`
+      - `say_wide:` / `say_16x9:` and `say_short:` / `say_9x16:` inside any screen block
+      - `clause_wide:` / `clause_short:` inside any screen block
+    """
+    is_short_variant = variant in ("9x16", "short", "short_9x16")
     meta: dict[str, str] = {}
     sections: list[dict[str, Any]] = []
     cur_section: dict[str, Any] | None = None
@@ -380,6 +393,13 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
     def _flush_screen() -> None:
         nonlocal cur_screen
         if not cur_screen:
+            return
+        only_mode = str(cur_screen.get("only", "")).lower()
+        if is_short_variant and only_mode in ("wide", "16x9", "widescreen"):
+            cur_screen = None
+            return
+        if (not is_short_variant) and only_mode in ("short", "9x16", "vertical"):
+            cur_screen = None
             return
         sec = _ensure_section()
         sec["screens"].append(cur_screen)
@@ -416,6 +436,47 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
         if line.lower().startswith("[style:"):
             continue
 
+        # 2b. `[review: auto | pace: 0.85]` directive
+        rev_m = re.match(r"^\[review:\s*(.+)\]$", line, flags=re.IGNORECASE)
+        if rev_m:
+            _flush_screen()
+            parts = [p.strip() for p in rev_m.group(1).split("|") if p.strip()]
+            attrs_rev: dict[str, str] = {}
+            for p in parts[1:]:
+                if ":" in p:
+                    k, v = p.split(":", 1)
+                    attrs_rev[k.strip().lower()] = v.strip()
+            pace_val = float(attrs_rev.get("pace", "0.85").rstrip("s"))
+            sec = _ensure_section("review", bell="bell:construction")
+            sec["screens"].append({
+                "step_kind": "REVIEW_AUTO",
+                "pace": pace_val,
+                "only": attrs_rev.get("only", ""),
+                "svg": "",
+                "weight": None,
+                "is_punchline": False,
+                "show": ["*"],
+                "active": [],
+                "coincide": [],
+                "equal": [],
+                "ticks": [],
+                "zoom": [],
+                "thumb_zoom": [],
+                "symbolic": "",
+                "sections": [],
+                "head": "",
+                "rows": [],
+                "text_lines": [],
+                "raw_clause": "",
+                "raw_clause_wide": "",
+                "raw_clause_short": "",
+                "just_raw": "",
+                "say_lines": [],
+                "say_wide_lines": [],
+                "say_short_lines": [],
+            })
+            continue
+
         # 3. `[screen: ...]` block header
         screen_m = re.match(r"^\[screen:\s*(.+)\]$", line, flags=re.IGNORECASE)
         if screen_m:
@@ -427,8 +488,12 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
                 if ":" in p:
                     k, v = p.split(":", 1)
                     attrs[k.strip().lower()] = v.strip()
+            only_attr = attrs.get("only", "")
+            if attrs.get("widescreen_only", "").lower() in ("true", "1", "yes"):
+                only_attr = "wide"
             cur_screen = {
                 "step_kind": step_kind,
+                "only": only_attr,
                 "svg": attrs.get("svg", ""),
                 "weight": float(attrs["weight"]) if "weight" in attrs and attrs["weight"] != "auto" else None,
                 "is_punchline": attrs.get("punchline", "").lower() in ("true", "1", "yes"),
@@ -445,8 +510,12 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
                 "rows": [],
                 "text_lines": [],
                 "raw_clause": "",
+                "raw_clause_wide": "",
+                "raw_clause_short": "",
                 "just_raw": "",
                 "say_lines": [],
+                "say_wide_lines": [],
+                "say_short_lines": [],
             }
             continue
 
@@ -488,16 +557,52 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
                 cur_screen["text_lines"].append(val)
             elif k_low == "clause":
                 cur_screen["raw_clause"] = val
+            elif k_low in ("clause_wide", "clause_16x9"):
+                cur_screen["raw_clause_wide"] = val
+            elif k_low in ("clause_short", "clause_9x16"):
+                cur_screen["raw_clause_short"] = val
             elif k_low == "just":
                 cur_screen["just_raw"] = val
+            elif k_low == "only":
+                cur_screen["only"] = val
+            elif k_low == "next":
+                meta["next"] = val
             elif k_low == "say":
                 cur_screen["say_lines"].append(val)
+            elif k_low in ("say_wide", "say_16x9"):
+                cur_screen["say_wide_lines"].append(val)
+            elif k_low in ("say_short", "say_9x16"):
+                cur_screen["say_short_lines"].append(val)
 
     _flush_screen()
     sections = [s for s in sections if s["screens"]]
 
+    # Resolve form-factor overrides (`say_wide` / `say_short`, `clause_wide` / `clause_short`) per screen
+    for sec in sections:
+        for scr in sec["screens"]:
+            if is_short_variant and scr.get("say_short_lines"):
+                scr["active_say_lines"] = scr["say_short_lines"]
+            elif (not is_short_variant) and scr.get("say_wide_lines"):
+                scr["active_say_lines"] = scr["say_wide_lines"]
+            else:
+                scr["active_say_lines"] = scr.get("say_lines", [])
+
+            if is_short_variant and scr.get("raw_clause_short"):
+                scr["active_raw_clause"] = scr["raw_clause_short"]
+            elif (not is_short_variant) and scr.get("raw_clause_wide"):
+                scr["active_raw_clause"] = scr["raw_clause_wide"]
+            else:
+                scr["active_raw_clause"] = scr.get("raw_clause", "")
+
     is_euclid = "prop" in meta or ("svg" in meta and "center" not in meta and "topic" not in meta)
-    total_steps = sum(len(s["screens"]) for s in sections)
+    NON_CORE_KINDS = {"INTRO", "REVIEW", "REVIEW_AUTO", "OUTRO"}
+    core_total_steps = sum(
+        1
+        for s in sections
+        for scr in s["screens"]
+        if str(scr.get("step_kind", "")).upper() not in NON_CORE_KINDS
+    )
+    total_steps = core_total_steps or sum(len(s["screens"]) for s in sections)
 
     if is_euclid:
         svg_path = _resolve_euclid_svg_path(meta.get("svg", "0255.g1.svg"), package_dir)
@@ -506,18 +611,70 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
         hidden_ids = svg_index.expand_visible(hide_tokens) if hide_tokens else []
 
         scenes: list[dict[str, Any]] = []
+        core_step_slides: list[dict[str, Any]] = []
         step_counter = 0
+
         for sec in sections:
             subslides: list[dict[str, Any]] = []
-            for scr in sec["screens"]:
-                step_counter += 1
-                say_joined = " ".join(scr["say_lines"]).strip()
+            for scr_idx, scr in enumerate(sec["screens"]):
+                s_kind_up = str(scr["step_kind"]).upper()
+
+                if s_kind_up == "REVIEW_AUTO":
+                    pace = float(scr.get("pace", 0.85))
+                    review_ledger = [
+                        {
+                            "step_num": cs["step_num"],
+                            "step_kind": cs["step_kind"],
+                            "symbolic": cs["symbolic"] or cs["raw_clause"],
+                            "sfx": [c for c in cs.get("sfx_cues", []) if c.startswith("[sfx:")],
+                        }
+                        for cs in core_step_slides
+                    ]
+                    for r_idx, cs in enumerate(core_step_slides):
+                        only_sfx = [c for c in cs.get("sfx_cues", []) if c.startswith("[sfx:")]
+                        if not only_sfx:
+                            only_sfx = ["[sfx:point]"]
+                        cues_for_step = list(only_sfx)
+                        if r_idx == 0 and sec.get("bell"):
+                            bell_tag = f"[{sec['bell']}]"
+                            if bell_tag not in cues_for_step:
+                                cues_for_step.insert(0, bell_tag)
+                        dur_s = round(pace * 1.45 if r_idx == len(core_step_slides) - 1 else pace, 3)
+                        rev_slide = {
+                            **cs,
+                            "section_id": sec["name"],
+                            "bell": sec.get("bell") or "bell:construction",
+                            "step_kind": "REVIEW",
+                            "orig_step_kind": cs["step_kind"],
+                            "is_review": True,
+                            "is_punchline": False,
+                            "sound_only": True,
+                            "fixed_duration_sec": dur_s,
+                            "weight": dur_s,
+                            "say_raw": " ".join(only_sfx),
+                            "sfx_cues": cues_for_step,
+                            "review_ledger": review_ledger,
+                        }
+                        subslides.append(rev_slide)
+                    continue
+
+                is_framing = s_kind_up in NON_CORE_KINDS
+                if not is_framing:
+                    step_counter += 1
+                    cur_step_num = step_counter
+                elif s_kind_up == "INTRO":
+                    cur_step_num = 0
+                else:
+                    cur_step_num = total_steps
+
+                say_joined = " ".join(scr["active_say_lines"]).strip()
+                active_clause = scr["active_raw_clause"]
                 clean_words = re.sub(r"<[^>]+>|\[[^\]]+\]", "", say_joined).split()
+                sound_only = len(clean_words) == 0
                 auto_w = max(0.35, len(clean_words) / 14.0) if clean_words else 1.0
                 weight = scr["weight"] if scr["weight"] is not None else round(auto_w, 2)
 
                 vis_ids = svg_index.expand_visible(scr["show"] or ["*"])
-                # For active: if a polygon `< A B C >` is active and equal sides are also listed, don't auto-pull circle center points into equal
                 act_ids = svg_index.expand_active_or_equal(scr["active"], only_polygon_pts=bool(scr["equal"]))
                 eq_ids = svg_index.expand_active_or_equal(scr["equal"], exclude_Ids=set(act_ids))
                 t_ids = svg_index.expand_ticks(scr["ticks"] or scr["equal"])
@@ -526,32 +683,59 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
                 just_id = j_parts[0] if len(j_parts) >= 1 else ""
                 just_title = j_parts[1] if len(j_parts) >= 2 else ""
 
+                sfx_cues = re.findall(r"\[(?:sfx|bell):[^\]]+\]", say_joined)
+                if scr_idx == 0 and sec.get("bell"):
+                    bell_tag = f"[{sec['bell']}]"
+                    if bell_tag not in sfx_cues:
+                        sfx_cues.insert(0, bell_tag)
+
                 sub_dict: dict[str, Any] = {
                     "type": "euclid_step",
+                    "section_id": sec["name"],
+                    "bell": sec.get("bell") or "",
+                    "only": scr.get("only", ""),
                     "weight": weight,
                     "prop_id": meta.get("prop", "BOOK I • PROP. 1"),
                     "short_title": meta.get("title", ""),
                     "g_id": meta.get("g_id", ""),
                     "folio": meta.get("folio", ""),
                     "enunciation": meta.get("enunciation", ""),
-                    "step_num": step_counter,
+                    "next_prop": meta.get("next", ""),
+                    "step_num": cur_step_num,
                     "step_total": total_steps,
                     "step_kind": scr["step_kind"],
-                    "chapter": scr["symbolic"] or scr["raw_clause"],
+                    "is_intro": s_kind_up == "INTRO",
+                    "is_outro": s_kind_up == "OUTRO",
+                    "is_review": False,
+                    "sound_only": sound_only,
+                    "fixed_duration_sec": 3.6 if (s_kind_up == "OUTRO" and sound_only) else None,
+                    "chapter": scr["symbolic"] or active_clause,
                     "svg_path": str(svg_path),
                     "visible_ids": vis_ids,
                     "hidden_ids": hidden_ids,
                     "active_ids": act_ids,
                     "equal_ids": eq_ids,
                     "tick_ids": t_ids,
+                    "raw_show": scr["show"] or ["*"],
+                    "raw_active": scr["active"],
+                    "raw_equal": scr["equal"],
+                    "raw_ticks": scr["ticks"] or scr["equal"],
                     "symbolic": scr["symbolic"],
-                    "clause_html": _format_euclid_clause_html(scr["raw_clause"]),
+                    "raw_clause": active_clause,
+                    "clause_html": _format_euclid_clause_html(active_clause),
                     "just_id": just_id,
                     "just_title": just_title,
+                    "say_raw": say_joined,
+                    "say_shared_raw": " ".join(scr["say_lines"]).strip(),
+                    "say_wide_raw": " ".join(scr["say_wide_lines"]).strip(),
+                    "say_short_raw": " ".join(scr["say_short_lines"]).strip(),
+                    "sfx_cues": sfx_cues,
                 }
                 if scr["is_punchline"]:
                     sub_dict["is_punchline"] = True
                 subslides.append(sub_dict)
+                if not is_framing:
+                    core_step_slides.append(sub_dict)
 
             scenes.append({
                 "id": sec["name"],
@@ -572,21 +756,71 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
     common = {
         "prop_id": prop_id,
         "short_code": short_code,
+        "short_title": short_title,
         "g_id": short_title,
         "folio": meta.get("folio", "Kimberling ETC • Collection 1 (X_1–X_19)"),
         "enunciation": meta.get("enunciation", ""),
+        "next_prop": meta.get("next", ""),
         "step_total": total_steps,
         "visible_ids": ["*"],
     }
 
     scenes = []
+    core_step_slides = []
     step_counter = 0
     for sec_idx, sec in enumerate(sections, start=1):
         subslides = []
-        for scr in sec["screens"]:
-            step_counter += 1
-            say_joined = " ".join(scr["say_lines"]).strip()
+        for scr_idx, scr in enumerate(sec["screens"]):
+            s_kind_up = str(scr["step_kind"]).upper()
+            if s_kind_up == "REVIEW_AUTO":
+                pace = float(scr.get("pace", 0.85))
+                review_ledger = [
+                    {
+                        "step_num": cs["step_num"],
+                        "step_kind": cs["step_kind"],
+                        "symbolic": cs.get("symbolic") or cs.get("just_id") or "",
+                        "sfx": [c for c in cs.get("sfx_cues", []) if c.startswith("[sfx:")],
+                    }
+                    for cs in core_step_slides
+                ]
+                for r_idx, cs in enumerate(core_step_slides):
+                    only_sfx = [c for c in cs.get("sfx_cues", []) if c.startswith("[sfx:")] or ["[sfx:point]"]
+                    cues_for_step = list(only_sfx)
+                    if r_idx == 0 and sec.get("bell"):
+                        bell_tag = f"[{sec['bell']}]"
+                        if bell_tag not in cues_for_step:
+                            cues_for_step.insert(0, bell_tag)
+                    dur_s = round(pace * 1.45 if r_idx == len(core_step_slides) - 1 else pace, 3)
+                    subslides.append({
+                        **cs,
+                        "section_id": sec["name"],
+                        "bell": sec.get("bell") or "bell:construction",
+                        "step_kind": "REVIEW",
+                        "orig_step_kind": cs["step_kind"],
+                        "is_review": True,
+                        "is_punchline": False,
+                        "sound_only": True,
+                        "fixed_duration_sec": dur_s,
+                        "weight": dur_s,
+                        "say_raw": " ".join(only_sfx),
+                        "sfx_cues": cues_for_step,
+                        "review_ledger": review_ledger,
+                    })
+                continue
+
+            is_framing = s_kind_up in NON_CORE_KINDS
+            if not is_framing:
+                step_counter += 1
+                cur_step_num = step_counter
+            elif s_kind_up == "INTRO":
+                cur_step_num = 0
+            else:
+                cur_step_num = total_steps
+
+            say_joined = " ".join(scr["active_say_lines"]).strip()
+            active_clause = scr["active_raw_clause"]
             clean_words = re.sub(r"<[^>]+>|\[[^\]]+\]", "", say_joined).split()
+            sound_only = len(clean_words) == 0
             auto_w = max(0.35, len(clean_words) / 18.0) if clean_words else 1.0
             weight = scr["weight"] if scr["weight"] is not None else round(auto_w, 2)
 
@@ -595,7 +829,7 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
                 scr["head"],
                 scr["rows"],
                 scr["text_lines"],
-                scr["raw_clause"],
+                active_clause,
             )
             j_parts = [p.strip() for p in scr["just_raw"].split("|")] if scr["just_raw"] else []
             just_tag = j_parts[0] if len(j_parts) > 0 else ""
@@ -605,19 +839,41 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
             svg_name = scr["svg"] or "01_primary.svg"
             svg_full = (svgs_dir / svg_name) if (svgs_dir / svg_name).exists() else (package_dir / svg_name)
 
+            sfx_cues = re.findall(r"\[(?:sfx|bell):[^\]]+\]", say_joined)
+            if scr_idx == 0 and sec.get("bell"):
+                bell_tag = f"[{sec['bell']}]"
+                if bell_tag not in sfx_cues:
+                    sfx_cues.insert(0, bell_tag)
+
             has_highlights = bool(scr["active"] or scr["coincide"] or scr["equal"])
             sub_dict = {
                 **common,
                 "type": "euclid_step",
+                "section_id": sec["name"],
+                "bell": sec.get("bell") or "",
+                "only": scr.get("only", ""),
                 "weight": weight,
-                "step_num": step_counter,
+                "step_num": cur_step_num,
                 "step_kind": scr["step_kind"],
+                "is_intro": s_kind_up == "INTRO",
+                "is_outro": s_kind_up == "OUTRO",
+                "is_review": False,
+                "sound_only": sound_only,
+                "fixed_duration_sec": 3.6 if (s_kind_up == "OUTRO" and sound_only) else None,
                 "svg_path": str(svg_full),
                 "symbolic": scr["symbolic"],
+                "raw_clause": active_clause,
                 "clause_html": clause_html,
                 "just_tag": just_tag,
                 "just_id": just_id,
                 "just_title": just_title,
+                "raw_active": scr["active"],
+                "raw_equal": scr["equal"],
+                "say_raw": say_joined,
+                "say_shared_raw": " ".join(scr["say_lines"]).strip(),
+                "say_wide_raw": " ".join(scr["say_wide_lines"]).strip(),
+                "say_short_raw": " ".join(scr["say_short_lines"]).strip(),
+                "sfx_cues": sfx_cues,
             }
             if scr["is_punchline"]:
                 sub_dict["is_punchline"] = True
@@ -631,9 +887,11 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
             if scr["thumb_zoom"]:
                 sub_dict["thumb_zoom"] = scr["thumb_zoom"]
             subslides.append(sub_dict)
+            if not is_framing:
+                core_step_slides.append(sub_dict)
 
         scenes.append({
-            "id": f"act_{sec_idx}_{sec['name']}",
+            "id": sec["name"] if sec["name"] in ("intro", "review", "outro") else f"act_{sec_idx}_{sec['name']}",
             "bell": sec.get("bell"),
             "title": f"{short_code} {short_title} — {sec['name']}",
             "subslides": subslides,
@@ -642,10 +900,36 @@ def compile_scr_text(script_text: str, package_dir: Path) -> list[dict[str, Any]
     return scenes
 
 
-def load_scenes_or_compile_scr(path: Path) -> list[dict[str, Any]]:
-    """Load scenes from a `.scr` / `.txt` script (compiled in memory) or a legacy `.json` file."""
+def resolve_script_source_for_variant(package_dir: Path, variant: str = "16x9") -> Path:
+    """Resolve `script.wide.scr` / `script.short.scr` if present, otherwise `script.scr`, `.scr`-formatted `script.txt`, or `scenes.json`."""
+    package_dir = Path(package_dir).resolve()
+    is_short = variant in ("9x16", "short", "short_9x16")
+    cand = package_dir / ("script.short.scr" if is_short else "script.wide.scr")
+    if cand.exists() and cand.read_text(encoding="utf-8").strip():
+        return cand
+    scr = package_dir / "script.scr"
+    if scr.exists():
+        return scr
+    txt = package_dir / "script.txt"
+    if txt.exists() and "[screen:" in txt.read_text(encoding="utf-8"):
+        return txt
+    return package_dir / "scenes.json"
+
+
+def load_scenes_or_compile_scr(path: Path, variant: str = "16x9") -> list[dict[str, Any]]:
+    """Load scenes from a `.scr` / `.txt` script (compiled in memory for `variant`) or a legacy `.json` file."""
     path = Path(path).resolve()
     if path.suffix.lower() in (".scr", ".txt"):
-        return compile_scr_text(path.read_text(encoding="utf-8"), path.parent)
+        return compile_scr_text(path.read_text(encoding="utf-8"), path.parent, variant=variant)
     import json
-    return json.loads(path.read_text(encoding="utf-8"))
+
+    raw_scenes = json.loads(path.read_text(encoding="utf-8"))
+    if variant in ("9x16", "short", "short_9x16"):
+        filtered: list[dict[str, Any]] = []
+        for sc in raw_scenes:
+            subs = [s for s in (sc.get("subslides") or [sc]) if not s.get("widescreen_only", False)]
+            if subs:
+                filtered.append({**sc, "subslides": subs})
+        return filtered
+    return raw_scenes
+

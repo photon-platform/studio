@@ -30,11 +30,10 @@ def build_ffmpeg_encode_cmd(
     total_duration: float | None = None,
     is_concat: bool = True,
 ) -> list[str]:
-    """Return the locked FFmpeg command for YouTube 1440p QHD (VP9) or 9:16 Vertical Shorts.
+    """Return the minimal FFmpeg command for Mode 1 (slides) or Mode 2 (motion).
 
-    Args:
-      variant: 'wide_16x9' (2560x1440 QHD) or 'short_9x16' (1080x1920).
-      mode: 'slides' (static slide sequence) or 'motion' (30 fps full-motion animation).
+    - Mode 2 (motion): `ffmpeg -y -framerate 30 -i frames/frame_%04d.png -i audio.wav output.mp4`
+    - Mode 1 (slides): `ffmpeg -y -f concat -safe 0 -i concat.txt -i audio.wav -vsync vfr -pix_fmt yuv420p output.mp4`
     """
     cmd = ["/usr/bin/ffmpeg", "-y"]
     if is_concat:
@@ -42,101 +41,13 @@ def build_ffmpeg_encode_cmd(
     else:
         cmd.extend(["-framerate", "30", "-i", str(concat_or_input)])
 
-    cmd.extend([
-        "-i",
-        str(audio_wav),
-        "-c:a",
-        "aac",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-b:a",
-        "192k",
-        "-shortest",
-    ])
-    if total_duration is not None and total_duration > 0:
-        cmd.extend(["-t", f"{total_duration:.3f}"])
+    if audio_wav and audio_wav.exists():
+        cmd.extend(["-i", str(audio_wav)])
 
-    target_scale = "2560:1440" if variant == "wide_16x9" else "1080:1920"
-    level = "5.1" if variant == "wide_16x9" else "4.1"
+    if is_concat:
+        cmd.extend(["-vsync", "vfr", "-pix_fmt", "yuv420p"])
 
-    if mode == "motion":
-        vf_str = f"fps=30,scale={target_scale}:flags=lanczos,setsar=1:1,noise=alls=2:allf=t,format=yuv420p"
-        cmd.extend([
-            "-vf",
-            vf_str,
-            "-vsync",
-            "cfr",
-            "-r",
-            "30",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "slow",
-            "-profile:v",
-            "high",
-            "-level:v",
-            level,
-            "-crf",
-            "16",
-            "-x264-params",
-            "aq-mode=3:aq-strength=0.8",
-            "-maxrate",
-            "24M" if variant == "wide_16x9" else "12M",
-            "-bufsize",
-            "48M" if variant == "wide_16x9" else "24M",
-        ])
-    else:
-        vf_str = f"fps=30,scale={target_scale}:flags=lanczos,setsar=1:1,format=yuv420p"
-        cmd.extend([
-            "-vf",
-            vf_str,
-            "-vsync",
-            "cfr",
-            "-r",
-            "30",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-tune",
-            "stillimage",
-            "-profile:v",
-            "high",
-            "-level:v",
-            level,
-            "-crf",
-            "18",
-            "-maxrate",
-            "16M" if variant == "wide_16x9" else "10M",
-            "-bufsize",
-            "32M" if variant == "wide_16x9" else "20M",
-        ])
-
-    cmd.extend([
-        "-g",
-        "90",
-        "-keyint_min",
-        "90",
-        "-sc_threshold",
-        "0",
-        "-bf",
-        "2",
-        "-flags",
-        "+cgop",
-        "-colorspace",
-        "bt709",
-        "-color_primaries",
-        "bt709",
-        "-color_trc",
-        "bt709",
-        "-color_range",
-        "tv",
-        "-movflags",
-        "+faststart",
-        str(output_mp4),
-    ])
+    cmd.append(str(output_mp4))
     return cmd
 
 
@@ -232,28 +143,38 @@ def render_package(
     if not scenes_source.exists():
         return {"status": "error", "error": f"Missing {scenes_source}"}
 
-    res_render = subprocess.run(
-        [
-            sys.executable,
-            str(DEFAULT_SHORTS_PY),
-            "-s",
-            str(scenes_source),
-            "-m",
-            str(manifest_json),
-            "-o",
-            str(package_dir),
-            "-p",
-            prefix,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    is_elements_prop = package_dir.parent.name.startswith("book_") or (
+        script_scr.exists() and "prop:" in script_scr.read_text(encoding="utf-8")[:400]
     )
-    if res_render.returncode != 0:
-        return {"status": "error", "stage": "render", "stderr": res_render.stderr.strip()}
 
-    for png_thumb in sorted(package_dir.glob("*thumb*.png")):
-        ensure_compressed_thumbnail(png_thumb)
+    if is_elements_prop:
+        from .stage import render_stage_package
+
+        stage_res = render_stage_package(package_dir, prefix=prefix)
+        if stage_res.get("status") != "ok":
+            return {"status": "error", "stage": "stage_render", "details": stage_res}
+    else:
+        res_render = subprocess.run(
+            [
+                sys.executable,
+                str(DEFAULT_SHORTS_PY),
+                "-s",
+                str(scenes_source),
+                "-m",
+                str(manifest_json),
+                "-o",
+                str(package_dir),
+                "-p",
+                prefix,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res_render.returncode != 0:
+            return {"status": "error", "stage": "render", "stderr": res_render.stderr.strip()}
+        for png_thumb in sorted(package_dir.glob("*thumb*.png")):
+            ensure_compressed_thumbnail(png_thumb)
 
     verification = verify_package_dir(package_dir)
     scratch_report = None

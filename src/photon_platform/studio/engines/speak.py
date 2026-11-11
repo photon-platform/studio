@@ -277,7 +277,7 @@ def synth_pcm_cached(
 
 
 def parse_structured_scr_segments(
-    script_text: str, profile: dict
+    script_text: str, profile: dict, variant: str = "16x9"
 ) -> list[tuple[str | None, list[tuple[str, str]]]] | None:
     """If script_text uses `[screen: ...]` blocks or `=== <section> ===` headers,
     group by section/bell and make each screen's `say:` line a 1-to-1 phrase subsegment."""
@@ -287,6 +287,7 @@ def parse_structured_scr_segments(
     ):
         return None
 
+    is_short = variant in ("9x16", "short", "short_9x16")
     styles = profile["styles"]
     default_key = profile.get("default_style", "brisk")
     bells_cfg = profile.get("bells", {})
@@ -294,6 +295,7 @@ def parse_structured_scr_segments(
     sections: list[dict] = []
     cur_sec: dict | None = None
     cur_style_key = default_key
+    cur_screen: dict | None = None
 
     def _ensure_sec() -> dict:
         nonlocal cur_sec
@@ -302,17 +304,92 @@ def parse_structured_scr_segments(
             sections.append(cur_sec)
         return cur_sec
 
+    core_sfx_phrases: list[str] = []
+    in_non_core = False
+
+    def _flush_scr() -> None:
+        nonlocal cur_screen
+        if not cur_screen:
+            return
+        only_val = str(cur_screen.get("only", "")).lower()
+        if is_short and only_val in ("wide", "16x9", "widescreen"):
+            cur_screen = None
+            return
+        if (not is_short) and only_val in ("short", "9x16", "vertical"):
+            cur_screen = None
+            return
+        if is_short and cur_screen.get("say_short"):
+            say_str = " ".join(cur_screen["say_short"]).strip()
+        elif (not is_short) and cur_screen.get("say_wide"):
+            say_str = " ".join(cur_screen["say_wide"]).strip()
+        else:
+            say_str = " ".join(cur_screen.get("say", [])).strip()
+        if say_str:
+            sec = _ensure_sec()
+            sec["phrases"].append((cur_screen["style"], say_str))
+            if not cur_screen["in_non_core"]:
+                cues, _ = extract_sfx_cues(say_str)
+                sfx_str = " ".join(f"[sfx:{c}]" for c in cues) if cues else "[sfx:point]"
+                core_sfx_phrases.append(sfx_str)
+        cur_screen = None
+
     for raw_line in script_text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if re.match(r"^===+\s*(.+?)\s*===+$", line):
+        m_sec = re.match(r"^===+\s*(.+?)\s*===+$", line)
+        if m_sec:
+            _flush_scr()
+            sec_name = m_sec.group(1).strip().lower()
+            in_non_core = sec_name in ("intro", "review", "outro")
             cur_sec = {"bell": None, "phrases": []}
             sections.append(cur_sec)
             cur_style_key = default_key
             continue
+        m_scr = re.match(r"^\[screen\s*:\s*(.+)\]$", line, flags=re.I)
+        if m_scr:
+            _flush_scr()
+            parts = [p.strip() for p in m_scr.group(1).split("|") if p.strip()]
+            sk = parts[0].upper() if parts else "CONSTRUCT"
+            only_attr = ""
+            for p in parts[1:]:
+                if ":" in p:
+                    k, v = p.split(":", 1)
+                    if k.strip().lower() == "only":
+                        only_attr = v.strip().lower()
+                    elif k.strip().lower() == "widescreen_only" and v.strip().lower() in ("true", "1", "yes"):
+                        only_attr = "wide"
+            in_non_core = sk in ("INTRO", "REVIEW", "REVIEW_AUTO", "OUTRO")
+            cur_screen = {
+                "step_kind": sk,
+                "only": only_attr,
+                "in_non_core": in_non_core,
+                "style": styles[cur_style_key],
+                "say": [],
+                "say_wide": [],
+                "say_short": [],
+            }
+            continue
+        m_rev = re.match(r"^\[review\s*:\s*(.+)\]$", line, flags=re.I)
+        if m_rev:
+            _flush_scr()
+            parts = [p.strip() for p in m_rev.group(1).split("|") if p.strip()]
+            pace_val = 0.85
+            for p in parts[1:]:
+                if ":" in p:
+                    k, v = p.split(":", 1)
+                    if k.strip().lower() == "pace":
+                        pace_val = float(v.strip().rstrip("s"))
+            sec = _ensure_sec()
+            if not sec.get("bell"):
+                sec["bell"] = "bell:construction"
+            for r_i, c_sfx in enumerate(core_sfx_phrases):
+                dur = round(pace_val * 1.45 if r_i == len(core_sfx_phrases) - 1 else pace_val, 3)
+                sec["phrases"].append((f"HOLD:{dur}", c_sfx))
+            continue
         m_bell = re.match(r"^\[(bell:[a-z_]+)\]$", line, flags=re.I)
         if m_bell:
+            _flush_scr()
             b_key = m_bell.group(1).lower()
             if cur_sec is not None and cur_sec["phrases"]:
                 cur_sec = {"bell": b_key, "phrases": []}
@@ -330,12 +407,33 @@ def parse_structured_scr_segments(
             req = m_style.group(1).lower()
             if req in styles:
                 cur_style_key = req
+                if cur_screen is not None:
+                    cur_screen["style"] = styles[cur_style_key]
+            continue
+        if cur_screen is not None and ":" in line:
+            k_raw, v_raw = line.split(":", 1)
+            kl = k_raw.strip().lower()
+            vl = v_raw.strip()
+            if kl == "only":
+                cur_screen["only"] = vl.lower()
+            elif kl == "say":
+                cur_screen["say"].append(vl)
+            elif kl in ("say_wide", "say_16x9"):
+                cur_screen["say_wide"].append(vl)
+            elif kl in ("say_short", "say_9x16"):
+                cur_screen["say_short"].append(vl)
             continue
         m_say = re.match(r"^say\s*:\s*(.+)$", line, flags=re.I)
         if m_say:
+            say_str = m_say.group(1).strip()
             sec = _ensure_sec()
-            sec["phrases"].append((styles[cur_style_key], m_say.group(1).strip()))
+            sec["phrases"].append((styles[cur_style_key], say_str))
+            if not in_non_core:
+                cues, _ = extract_sfx_cues(say_str)
+                sfx_str = " ".join(f"[sfx:{c}]" for c in cues) if cues else "[sfx:point]"
+                core_sfx_phrases.append(sfx_str)
 
+    _flush_scr()
     out: list[tuple[str | None, list[tuple[str, str]]]] = []
     for sec in sections:
         if sec["phrases"]:
@@ -343,10 +441,33 @@ def parse_structured_scr_segments(
     return out if out else None
 
 
-def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
+def synthesize_script(
+    script_text_or_path: str | Path,
+    output_wav: Path | None = None,
+    variant: str = "16x9",
+    out_dir: Path | None = None,
+    prefix: str | None = None,
+) -> tuple[Path, Path]:
   api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
   if not api_key:
     raise RuntimeError("Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set")
+
+  if isinstance(script_text_or_path, Path) or (
+      isinstance(script_text_or_path, str)
+      and "\n" not in script_text_or_path
+      and Path(script_text_or_path).exists()
+  ):
+    scr_path = Path(script_text_or_path).resolve()
+    script_text = scr_path.read_text(encoding="utf-8")
+    target_dir = Path(out_dir).resolve() if out_dir else scr_path.parent
+    pfx = prefix or (output_wav.stem if output_wav else scr_path.parent.name)
+    if output_wav is None:
+      output_wav = target_dir / f"{pfx}.wav"
+  else:
+    script_text = str(script_text_or_path)
+    if output_wav is None:
+      raise ValueError("output_wav is required when passing raw script text")
+    output_wav = Path(output_wav).resolve()
 
   profile = load_profile()
   voice_id = profile["voice_id"]
@@ -354,10 +475,15 @@ def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
   pronunciations = profile.get("pronunciations", {})
   bells_cfg = profile.get("bells", {})
 
-  segments = parse_structured_scr_segments(script_text, profile) or parse_script_segments(script_text, profile)
+  segments = parse_structured_scr_segments(script_text, profile, variant=variant) or parse_script_segments(script_text, profile)
   cache_dir = output_wav.parent / '.tts_cache'
   if not segments:
     raise ValueError("No spoken text found in script")
+
+  # Remove any legacy _spoken.wav backup so fresh synthesis is authoritative
+  spoken_bak = output_wav.with_name(f"{output_wav.stem}_spoken.wav")
+  if spoken_bak.exists():
+    spoken_bak.unlink(missing_ok=True)
 
   pcm_chunks = []
   timing_segments = []
@@ -386,12 +512,14 @@ def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
     subsegments = []
 
     for p_idx, (style_str, raw_phrase) in enumerate(phrases):
+      is_hold_only = style_str.startswith("HOLD:")
+      hold_target_sec = float(style_str.split(":", 1)[1]) if is_hold_only else 3.2
       sub_start = sub_cursor
       p_chunks = []
       if p_idx == 0 and intro_samples > 0:
         # First subsegment includes the leading bell chime
         sub_cursor += intro_samples
-      elif p_idx > 0:
+      elif p_idx > 0 and not is_hold_only:
         # Insert a clean 0.42s digital silence pause between <pause> <pause> steps
         sil = silence_pcm(0.42)
         seg_chunks.append(sil)
@@ -406,7 +534,12 @@ def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
           p_chunks.append(sfx_bytes)
           sub_cursor += len(sfx_bytes) // 2
       clean_text = apply_pronunciations(phrase_no_sfx, pronunciations)
-      pcm = synth_pcm_cached(voice_id, clean_text, style_str, model, api_key, cache_dir=cache_dir)
+      if clean_text:
+        pcm = synth_pcm_cached(voice_id, clean_text, style_str, model, api_key, cache_dir=cache_dir)
+      else:
+        elapsed_sub = (sub_cursor - sub_start) / SAMPLE_RATE
+        rem_sec = max(0.20, hold_target_sec - elapsed_sub)
+        pcm = silence_pcm(rem_sec)
       seg_chunks.append(pcm)
       p_chunks.append(pcm)
       sub_cursor += len(pcm) // 2
@@ -415,13 +548,13 @@ def synthesize_script(script_text: str, output_wav: Path) -> tuple[Path, Path]:
       sub_clean_caption = re.sub(r"\s+", " ", sub_clean_caption).strip()
       subsegments.append({
           "index": p_idx,
-          "text": sub_clean_caption,
+          "text": sub_clean_caption or " ".join(f"[sfx:{c}]" for c in sfx_cues),
           "start_sec": round(sub_start / SAMPLE_RATE, 3),
           "end_sec": round(sub_cursor / SAMPLE_RATE, 3),
           "duration_sec": round((sub_cursor - sub_start) / SAMPLE_RATE, 3),
       })
       phrase_texts.append(sub_clean_caption)
-      phrase_styles.append(style_str)
+      phrase_styles.append("harmonic_review" if is_hold_only else style_str)
 
     seg_bytes = b"".join(seg_chunks)
     seg_samples = len(seg_bytes) // 2

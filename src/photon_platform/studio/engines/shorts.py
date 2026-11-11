@@ -165,7 +165,7 @@ def prepare_euclid_dark_svg(svg_path: Path) -> str:
   raw = svg_path.read_text(encoding="utf-8")
   raw = re.sub(r"<\?xml[^>]*\?>", "", raw)
   if "geometor-etc-drawing" in raw:
-    raw = re.sub(r"<script>//<!\[CDATA\[.*?//\]\]></script>", "", raw, flags=re.DOTALL)
+    raw = re.sub(r"<script\b[^>]*>.*?</script>", "", raw, flags=re.DOTALL | re.IGNORECASE)
     etc_css = """
     svg.geometor-etc-drawing {
       width: 100% !important;
@@ -3070,20 +3070,6 @@ def assemble_mp4(
   lines.append(f"file '{slide_pngs[-1].resolve()}'")
   concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-  # Widescreen 16:9 videos are mastered at 2560x1440 (1440p QHD) so YouTube
-  # routes them to its full 7-rung VP9 + H.264 hardware pipeline (144p..1440p)
-  # and starts playback in HD instead of 240p.
-  if upscale_qhd:
-    vf_chain = "fps=30,scale=2560:1440:flags=lanczos,setsar=1:1,format=yuv420p"
-    h264_level = "5.1"
-    maxrate = "16M"
-    bufsize = "32M"
-  else:
-    vf_chain = "fps=30,setsar=1:1,format=yuv420p"
-    h264_level = "4.1"
-    maxrate = "10M"
-    bufsize = "20M"
-
   cmd = [
       "/usr/bin/ffmpeg",
       "-y",
@@ -3098,59 +3084,14 @@ def assemble_mp4(
     cmd.extend([
         "-i",
         str(audio_wav),
-        "-c:a",
-        "aac",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-b:a",
-        "192k",
-        "-shortest",
     ])
+  if upscale_qhd:
+    cmd.extend(["-vf", "scale=2560:1440:flags=lanczos"])
   cmd.extend([
-      "-t",
-      f"{total_dur:.3f}",
-      "-vf",
-      vf_chain,
       "-vsync",
-      "cfr",
-      "-r",
-      "30",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "fast",
-      "-profile:v",
-      "high",
-      "-level:v",
-      h264_level,
-      "-crf",
-      "18",
-      "-maxrate",
-      maxrate,
-      "-bufsize",
-      bufsize,
-      "-g",
-      "90",
-      "-keyint_min",
-      "90",
-      "-sc_threshold",
-      "0",
-      "-bf",
-      "2",
-      "-flags",
-      "+cgop",
-      "-colorspace",
-      "bt709",
-      "-color_primaries",
-      "bt709",
-      "-color_trc",
-      "bt709",
-      "-color_range",
-      "tv",
-      "-movflags",
-      "+faststart",
+      "vfr",
+      "-pix_fmt",
+      "yuv420p",
       str(out_mp4),
   ])
   subprocess.run(cmd, check=True, capture_output=True)

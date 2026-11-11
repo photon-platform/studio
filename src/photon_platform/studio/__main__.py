@@ -7,23 +7,6 @@ import json
 from pathlib import Path
 import sys
 
-from .archive import (
-    clean_scratch,
-    scan_storage,
-    sync_all_projects,
-    sync_archive,
-)
-from .broadcast import (
-    discover_all_packages,
-    get_quota_status,
-    repair_package,
-    schedule_packages,
-)
-from .capture import capture_html_viewport
-from .render import render_package
-from .speak import parse_unified_script, synthesize_script
-from .verify import verify_package_dir
-
 
 def _print_json(data: object) -> None:
     print(json.dumps(data, indent=2))
@@ -63,9 +46,11 @@ def cli(argv: list[str] | None = None) -> int:
     p_motion.add_argument("--thumb-sec", type=float, default=None)
 
     # 4. speak
-    p_speak = sub.add_parser("speak", help="Parse script.txt or synthesize Argon III-C audio")
+    p_speak = sub.add_parser("speak", help="Parse script.scr/script.txt or synthesize Argon III-C audio")
     p_speak.add_argument("script_path", type=Path)
     p_speak.add_argument("-o", "--output-wav", type=Path, default=None)
+    p_speak.add_argument("--prefix", default=None)
+    p_speak.add_argument("--variant", choices=["16x9", "9x16"], default="16x9")
 
     # 5. capture
     p_cap = sub.add_parser("capture", help="Capture HTML or URL in isolated Chromium viewport")
@@ -74,6 +59,16 @@ def cli(argv: list[str] | None = None) -> int:
     p_cap.add_argument("--width", type=int, default=1920)
     p_cap.add_argument("--height", type=int, default=1080)
     p_cap.add_argument("--wait-ms", type=int, default=1500)
+
+    # 5b. stage (Mode 1 Interactive Browser Stage & Live Server)
+    p_stage = sub.add_parser("stage", help="Build interactive stage.html, render MP4s from stage.html, or serve live Stage")
+    p_stage.add_argument("target_path", type=Path, help="Proposition folder (e.g. videos/book_i/01) or videos/ root")
+    p_stage.add_argument("--build-only", action="store_true", help="Write stage.html without starting HTTP server")
+    p_stage.add_argument("--render", action="store_true", help="Render per-segment clips & assemble 16:9 QHD and 9:16 Short MP4s")
+    p_stage.add_argument("--section", default=None, help="Target a single section (e.g. construction or 02_construction) for regeneration")
+    p_stage.add_argument("--force", action="store_true", help="Force regeneration of all sections ignoring cache")
+    p_stage.add_argument("--port", type=int, default=8765)
+    p_stage.add_argument("--no-open", action="store_true")
 
     # 6. archive
     p_arch = sub.add_parser("archive", help="Manage 3-tier media storage, scratch cleanup, and Google Drive sync")
@@ -126,11 +121,15 @@ def cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "verify":
+        from .verify import verify_package_dir
+
         res = verify_package_dir(args.package_dir)
         _print_json(res)
         return 0 if res.get("all_valid") else 1
 
     if args.command == "render":
+        from .render import render_package
+
         res = render_package(
             args.package_dir,
             prefix=args.prefix,
@@ -161,13 +160,19 @@ def cli(argv: list[str] | None = None) -> int:
         return 0 if res.get("ok") else 1
 
     if args.command == "speak":
-        if args.output_wav:
-            _print_json(synthesize_script(args.script_path, args.output_wav))
-        else:
-            _print_json(parse_unified_script(args.script_path))
+        from .engines.speak import synthesize_script
+        from .stage import infer_package_prefix
+
+        scr_p = Path(args.script_path).resolve()
+        out_dir = args.output_wav.resolve().parent if args.output_wav else scr_p.parent
+        pfx = args.prefix or (args.output_wav.stem if args.output_wav else infer_package_prefix(scr_p.parent))
+        wav_out, json_out = synthesize_script(scr_p, out_dir=out_dir, prefix=pfx, variant=args.variant)
+        _print_json({"status": "ok", "wav": str(wav_out), "manifest": str(json_out), "prefix": pfx})
         return 0
 
     if args.command == "capture":
+        from .capture import capture_html_viewport
+
         _print_json(
             capture_html_viewport(
                 args.html_or_url,
@@ -179,7 +184,29 @@ def cli(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "stage":
+        from .stage import build_stage_html, render_stage_package, serve_stage
+
+        if args.render or args.section:
+            res = render_stage_package(
+                args.target_path,
+                target_section=args.section,
+                force=args.force,
+            )
+            _print_json(res)
+            return 0 if res.get("status") == "ok" else 1
+        if args.build_only:
+            out = build_stage_html(args.target_path)
+            _print_json({"status": "ok", "stage_html": str(out)})
+            return 0
+        if (args.target_path / "script.scr").exists() or (args.target_path / "scenes.json").exists():
+            build_stage_html(args.target_path)
+        serve_stage(args.target_path, port=args.port, open_browser=not args.no_open)
+        return 0
+
     if args.command == "archive":
+        from .archive import clean_scratch, scan_storage, sync_all_projects, sync_archive
+
         if args.archive_cmd == "scan":
             _print_json(scan_storage(args.root_dir))
         elif args.archive_cmd == "clean":
@@ -203,6 +230,8 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "broadcast":
+        from .broadcast import discover_all_packages, get_quota_status, repair_package, schedule_packages
+
         if args.broadcast_cmd == "quota":
             _print_json(get_quota_status())
         elif args.broadcast_cmd == "status":
